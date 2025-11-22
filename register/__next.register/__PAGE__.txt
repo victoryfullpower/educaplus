@@ -1,0 +1,10 @@
+1:"$Sreact.fragment"
+2:I[47257,["/educaplus/_next/static/chunks/ff1a16fafef87110.js","/educaplus/_next/static/chunks/247eb132b7f7b574.js"],"ClientPageRoot"]
+3:I[86906,["/educaplus/_next/static/chunks/b52041c91e0928f9.js"],"default"]
+6:I[97367,["/educaplus/_next/static/chunks/ff1a16fafef87110.js","/educaplus/_next/static/chunks/247eb132b7f7b574.js"],"OutletBoundary"]
+7:"$Sreact.suspense"
+:HL["/educaplus/_next/static/chunks/d9da34da496f2011.css","style"]
+0:{"buildId":"vzqRDLEBo29I3j2jXwDqN","rsc":["$","$1","c",{"children":[["$","$L2",null,{"Component":"$3","serverProvidedParams":{"searchParams":{},"params":{},"promises":["$@4","$@5"]}}],[["$","link","0",{"rel":"stylesheet","href":"/educaplus/_next/static/chunks/d9da34da496f2011.css","precedence":"next"}],["$","script","script-0",{"src":"/educaplus/_next/static/chunks/b52041c91e0928f9.js","async":true}]],["$","$L6",null,{"children":["$","$7",null,{"name":"Next.MetadataOutlet","children":"$@8"}]}]]}],"loading":null,"isPartial":false}
+4:{}
+5:"$0:rsc:props:children:0:props:serverProvidedParams:params"
+8:null

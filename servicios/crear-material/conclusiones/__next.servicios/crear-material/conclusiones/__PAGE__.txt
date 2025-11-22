@@ -1,0 +1,7 @@
+1:"$Sreact.fragment"
+2:I[2971,["/educaplus/_next/static/chunks/74ac05e0b38c7272.js"],"default"]
+3:I[97367,["/educaplus/_next/static/chunks/ff1a16fafef87110.js","/educaplus/_next/static/chunks/247eb132b7f7b574.js"],"OutletBoundary"]
+4:"$Sreact.suspense"
+:HL["/educaplus/_next/static/chunks/9ca270e875b19066.css","style"]
+0:{"buildId":"vzqRDLEBo29I3j2jXwDqN","rsc":["$","$1","c",{"children":[[["$","$L2",null,{}],["$","main",null,{"className":"crear-material-module__yuPkfG__main","children":["$","div",null,{"className":"crear-material-module__yuPkfG__container","children":[["$","h1",null,{"className":"crear-material-module__yuPkfG__title","children":"CONCLUSIONES DESCRIPTIVAS"}],["$","p",null,{"className":"crear-material-module__yuPkfG__subtitle","children":"Genera conclusiones descriptivas para tus estudiantes con el poder de la IA"}],["$","div",null,{"className":"crear-material-module__yuPkfG__warningBox","children":[["$","p",null,{"children":"⚠️ Esta funcionalidad estará disponible próximamente."}],["$","p",null,{"children":"Primero debes registrarte o iniciar sesión para usar esta herramienta."}]]}]]}]}]],[["$","link","0",{"rel":"stylesheet","href":"/educaplus/_next/static/chunks/9ca270e875b19066.css","precedence":"next"}],["$","script","script-0",{"src":"/educaplus/_next/static/chunks/74ac05e0b38c7272.js","async":true}]],["$","$L3",null,{"children":["$","$4",null,{"name":"Next.MetadataOutlet","children":"$@5"}]}]]}],"loading":null,"isPartial":false}
+5:null
