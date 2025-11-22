@@ -1,0 +1,112 @@
+.main {
+  width: 100%;
+  min-height: 100vh;
+  background: #f8f9fa;
+  padding: 60px 0;
+}
+
+.container {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 0 40px;
+}
+
+.title {
+  font-size: 42px;
+  font-weight: 700;
+  color: #0066cc;
+  margin-bottom: 15px;
+  text-align: center;
+}
+
+.subtitle {
+  font-size: 18px;
+  color: #666;
+  text-align: center;
+  margin-bottom: 30px;
+  max-width: 800px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.warningBox {
+  background: #fff3cd;
+  border: 2px solid #ffc107;
+  border-radius: 12px;
+  padding: 20px;
+  margin-bottom: 50px;
+  text-align: center;
+  color: #856404;
+}
+
+.warningBox p {
+  margin: 0;
+  font-size: 16px;
+}
+
+.optionsGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 30px;
+}
+
+.optionCard {
+  background: white;
+  padding: 40px;
+  border-radius: 15px;
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+  text-decoration: none;
+  color: inherit;
+  transition: transform 0.3s, box-shadow 0.3s;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  border-top: 5px solid #0066cc;
+  min-height: 200px;
+  justify-content: center;
+}
+
+.optionCard:hover {
+  transform: translateY(-8px);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.15);
+}
+
+.optionCard h2 {
+  font-size: 22px;
+  color: #0066cc;
+  margin-bottom: 15px;
+  font-weight: 700;
+}
+
+.optionCard p {
+  font-size: 14px;
+  color: #666;
+  line-height: 1.6;
+  margin: 0;
+}
+
+@media (max-width: 768px) {
+  .container {
+    padding: 0 20px;
+  }
+
+  .title {
+    font-size: 32px;
+  }
+
+  .optionsGrid {
+    grid-template-columns: 1fr;
+    gap: 20px;
+  }
+
+  .optionCard {
+    padding: 30px;
+    min-height: 150px;
+  }
+
+  .optionCard h2 {
+    font-size: 18px;
+  }
+}
+

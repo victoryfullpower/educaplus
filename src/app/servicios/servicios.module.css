@@ -1,0 +1,93 @@
+.main {
+  width: 100%;
+  min-height: 100vh;
+  background: #f8f9fa;
+  padding: 60px 0;
+}
+
+.container {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 0 40px;
+}
+
+.title {
+  font-size: 42px;
+  font-weight: 700;
+  color: #0066cc;
+  margin-bottom: 50px;
+  text-align: center;
+}
+
+.servicesGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+  gap: 40px;
+}
+
+.serviceCard {
+  background: white;
+  padding: 40px;
+  border-radius: 15px;
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+  text-decoration: none;
+  color: inherit;
+  transition: transform 0.3s, box-shadow 0.3s;
+  display: flex;
+  flex-direction: column;
+  border-top: 5px solid #0066cc;
+}
+
+.serviceCard:hover {
+  transform: translateY(-8px);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.15);
+}
+
+.serviceCard h2 {
+  font-size: 28px;
+  color: #0066cc;
+  margin-bottom: 20px;
+}
+
+.serviceCard p {
+  font-size: 16px;
+  line-height: 1.7;
+  color: #666;
+  margin-bottom: 15px;
+}
+
+.feature {
+  font-size: 14px;
+  color: #00aa44;
+  font-weight: 600;
+  padding-left: 25px;
+  position: relative;
+}
+
+.feature::before {
+  content: "✓";
+  position: absolute;
+  left: 0;
+  color: #00aa44;
+  font-weight: bold;
+}
+
+@media (max-width: 768px) {
+  .container {
+    padding: 0 20px;
+  }
+
+  .title {
+    font-size: 32px;
+  }
+
+  .servicesGrid {
+    grid-template-columns: 1fr;
+    gap: 25px;
+  }
+
+  .serviceCard {
+    padding: 30px;
+  }
+}
+

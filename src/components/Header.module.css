@@ -1,0 +1,131 @@
+.header {
+  background: white;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+  position: sticky;
+  top: 0;
+  z-index: 1000;
+}
+
+.container {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 20px 40px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.left {
+  display: flex;
+  align-items: center;
+}
+
+.logo {
+  text-decoration: none;
+  display: flex;
+  align-items: center;
+}
+
+.logoText {
+  font-size: 28px;
+  font-weight: 700;
+  background: linear-gradient(135deg, #0066cc 0%, #00aa44 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.nav {
+  display: flex;
+  align-items: center;
+  gap: 30px;
+  flex-wrap: wrap;
+}
+
+.navLink {
+  color: #333;
+  text-decoration: none;
+  font-weight: 500;
+  font-size: 14px;
+  transition: color 0.3s;
+  white-space: nowrap;
+  position: relative;
+}
+
+.navLink:hover {
+  color: #0066cc;
+}
+
+.dropdown {
+  position: relative;
+}
+
+.arrow {
+  font-size: 10px;
+  margin-left: 4px;
+}
+
+.dropdownMenu {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  background: white;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+  border-radius: 8px;
+  padding: 10px 0;
+  min-width: 220px;
+  margin-top: 10px;
+}
+
+.dropdownItem {
+  display: block;
+  padding: 12px 20px;
+  color: #333;
+  text-decoration: none;
+  font-size: 14px;
+  transition: background 0.2s;
+}
+
+.dropdownItem:hover {
+  background: #f0f7ff;
+  color: #0066cc;
+}
+
+.navButton {
+  background: linear-gradient(135deg, #0066cc 0%, #00aa44 100%);
+  color: white;
+  padding: 10px 24px;
+  border-radius: 25px;
+  text-decoration: none;
+  font-weight: 600;
+  font-size: 14px;
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.navButton:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 102, 204, 0.3);
+}
+
+@media (max-width: 968px) {
+  .container {
+    flex-direction: column;
+    gap: 20px;
+    padding: 20px;
+  }
+
+  .nav {
+    justify-content: center;
+    gap: 15px;
+  }
+
+  .navLink {
+    font-size: 12px;
+  }
+
+  .navButton {
+    padding: 8px 20px;
+    font-size: 12px;
+  }
+}
+
