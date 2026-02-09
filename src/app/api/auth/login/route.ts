@@ -41,7 +41,8 @@ export async function POST(request: NextRequest) {
       user: {
         id: user.id,
         email: user.email,
-        name: user.name
+        name: user.name,
+        rol: user.rol // Incluir el rol en la respuesta
       }
     })
 

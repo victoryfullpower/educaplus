@@ -89,6 +89,21 @@
   margin-bottom: 25px;
 }
 
+.unidadTitle {
+  padding: 15px;
+  background: #e8f4f8;
+  border: 2px solid #0066cc;
+  border-radius: 8px;
+  font-size: 18px;
+  color: #0066cc;
+  text-align: center;
+  margin-top: 10px;
+}
+
+.unidadTitle strong {
+  font-weight: 600;
+}
+
 .formGroup label {
   font-weight: 600;
   color: #333;

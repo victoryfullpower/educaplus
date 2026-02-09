@@ -2,9 +2,30 @@
 
 import Link from 'next/link'
 import Header from '@/components/Header'
+import { useState, useEffect } from 'react'
 import styles from './crear-material.module.css'
 
 export default function CrearMaterialPage() {
+  const [isAuthenticated, setIsAuthenticated] = useState(false)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    const checkAuth = async () => {
+      try {
+        const response = await fetch('/api/auth/check')
+        const data = await response.json()
+        setIsAuthenticated(data.authenticated || false)
+      } catch (error) {
+        console.error('Error al verificar autenticación:', error)
+        setIsAuthenticated(false)
+      } finally {
+        setLoading(false)
+      }
+    }
+
+    checkAuth()
+  }, [])
+
   return (
     <>
       <Header />
@@ -15,9 +36,11 @@ export default function CrearMaterialPage() {
             Tu programación, unidades, sesiones y fichas… en minutos, con el poder de la inteligencia artificial.
           </p>
 
-          <div className={styles.warningBox}>
-            <p>⚠️ <strong>Primero debes registrarte o iniciar sesión</strong> para usar esta herramienta.</p>
-          </div>
+          {!loading && !isAuthenticated && (
+            <div className={styles.warningBox}>
+              <p>⚠️ <strong>Primero debes registrarte o iniciar sesión</strong> para usar esta herramienta.</p>
+            </div>
+          )}
 
           <div className={styles.optionsGrid}>
             <Link href="/servicios/crear-material/situaciones-significativas" className={styles.optionCard}>

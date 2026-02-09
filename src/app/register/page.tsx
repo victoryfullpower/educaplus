@@ -23,25 +23,23 @@ export default function RegisterPage() {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ name, email, password }),
+        body: JSON.stringify({ email, password, name }),
       })
 
       const data = await response.json()
 
       if (!response.ok) {
-        const errorMsg = data.error || 'Error al registrar usuario'
-        const details = data.details ? `: ${data.details}` : ''
-        setError(`${errorMsg}${details}`)
-        console.error('Error en registro:', data)
+        setError(data.error || 'Error al registrar usuario')
+        setLoading(false)
         return
       }
 
+      // Registro exitoso - redirigir al home
       router.push('/home')
       router.refresh()
-    } catch (err) {
-      console.error('Error de conexión:', err)
-      setError('Error de conexión. Por favor verifica que el servidor esté corriendo.')
-    } finally {
+    } catch (error) {
+      console.error('Error en registro:', error)
+      setError('Error de conexión. Por favor, intenta de nuevo.')
       setLoading(false)
     }
   }
@@ -68,8 +66,8 @@ export default function RegisterPage() {
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              required
               placeholder="tu@email.com"
+              required
             />
           </div>
           <div className={styles.field}>
@@ -79,8 +77,8 @@ export default function RegisterPage() {
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              required
               placeholder="••••••••"
+              required
             />
           </div>
           {error && <div className={styles.error}>{error}</div>}

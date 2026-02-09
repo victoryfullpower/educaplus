@@ -144,9 +144,7 @@ export default function SituacionesSignificativasPage() {
 
             {error && <div className={styles.error}>{error}</div>}
 
-            <div className={styles.noteBox}>
-              <p><strong>NOTA IMPORTANTE:</strong> El maestro Livio dará las pautas y características de cómo se elabora una situación significativa para que se elabore el prompt adecuado acorde a normativas y lineamientos del MINEDU.</p>
-            </div>
+        
 
             <div className={styles.buttonGroup}>
               <button type="submit" className={styles.button} disabled={loading}>

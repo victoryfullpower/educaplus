@@ -1,11 +1,12 @@
 'use client'
 
-import { useState } from 'react'
-import { useRouter } from 'next/navigation'
+import { useState, useEffect } from 'react'
+import { useRouter, useSearchParams } from 'next/navigation'
 import styles from './login.module.css'
 
 export default function LoginPage() {
   const router = useRouter()
+  const searchParams = useSearchParams()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
@@ -25,32 +26,27 @@ export default function LoginPage() {
         body: JSON.stringify({ email, password }),
       })
 
-      // Verificar si la respuesta es JSON válido
-      let data
-      try {
-        data = await response.json()
-      } catch (jsonError) {
-        const text = await response.text()
-        console.error('Error parseando JSON:', text)
-        setError(`Error del servidor: ${response.status} ${response.statusText}`)
-        return
-      }
+      const data = await response.json()
 
       if (!response.ok) {
-        const errorMsg = data.error || 'Error al iniciar sesión'
-        const details = data.details ? `: ${data.details}` : ''
-        setError(`${errorMsg}${details}`)
-        console.error('Error en login:', data)
+        setError(data.error || 'Error al iniciar sesión')
+        setLoading(false)
         return
       }
 
-      router.push('/home')
+      // Login exitoso - redirigir según el rol del usuario
+      let redirectUrl = searchParams.get('redirect') || '/home'
+      
+      // Si el usuario es Administrador, redirigir al panel de administración
+      if (data.user?.rol === 'Administrador') {
+        redirectUrl = '/paneladministracion'
+      }
+      
+      router.push(redirectUrl)
       router.refresh()
-    } catch (err) {
-      console.error('Error de conexión:', err)
-      const errorMsg = err instanceof Error ? err.message : 'Error desconocido'
-      setError(`Error de conexión: ${errorMsg}. Verifica que el servidor esté corriendo en http://localhost:3000`)
-    } finally {
+    } catch (error) {
+      console.error('Error en login:', error)
+      setError('Error de conexión. Por favor, intenta de nuevo.')
       setLoading(false)
     }
   }
@@ -67,8 +63,9 @@ export default function LoginPage() {
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              required
               placeholder="tu@email.com"
+              required
+              disabled={loading}
             />
           </div>
           <div className={styles.field}>
@@ -78,8 +75,9 @@ export default function LoginPage() {
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              required
               placeholder="••••••••"
+              required
+              disabled={loading}
             />
           </div>
           {error && <div className={styles.error}>{error}</div>}

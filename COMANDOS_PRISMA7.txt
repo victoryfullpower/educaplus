@@ -1,0 +1,19 @@
+# Comandos para ejecutar después de actualizar Node.js
+
+# 1. Verificar versión de Node.js (debe ser 20.19+ o 22.12+)
+node --version
+
+# 2. Instalar Prisma 7 y dependencias
+npm install prisma@latest @prisma/client@latest
+npm install @prisma/adapter-pg pg
+npm install --save-dev @types/pg
+
+# 3. Regenerar el cliente de Prisma
+npx prisma generate
+
+# 4. Validar el schema
+npx prisma validate
+
+# 5. (Opcional) Si necesitas ejecutar migraciones
+npx prisma migrate dev
+

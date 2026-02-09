@@ -91,6 +91,104 @@
   color: #333;
 }
 
+.loading {
+  text-align: center;
+  padding: 60px 20px;
+  color: white;
+  font-size: 18px;
+}
+
+.yearTitle {
+  font-size: 28px;
+  font-weight: 700;
+  color: #333;
+  margin: 0 0 24px 0;
+  padding-bottom: 16px;
+  border-bottom: 3px solid #667eea;
+}
+
+.documentsList {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.documentCard {
+  background: #f8fafc;
+  border: 2px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 24px;
+  transition: all 0.3s;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 20px;
+}
+
+.documentCard:hover {
+  border-color: #667eea;
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.15);
+  transform: translateY(-2px);
+}
+
+.documentInfo {
+  flex: 1;
+}
+
+.documentTitle {
+  font-size: 20px;
+  font-weight: 600;
+  color: #1e293b;
+  margin: 0 0 12px 0;
+}
+
+.documentMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.metaItem {
+  font-size: 14px;
+  color: #64748b;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.unidadesCount {
+  font-size: 13px;
+  color: #667eea;
+  font-weight: 500;
+  margin-top: 8px;
+}
+
+.documentActions {
+  display: flex;
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+.actionButton {
+  padding: 10px 20px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  text-decoration: none;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.2s, box-shadow 0.2s;
+  display: inline-block;
+}
+
+.actionButton:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+}
+
 @media (min-width: 768px) {
   .infoItem {
     flex-direction: row;
@@ -100,6 +198,29 @@
 
   .label {
     min-width: 150px;
+  }
+
+  .documentCard {
+    flex-direction: row;
+  }
+
+  .documentActions {
+    flex-direction: column;
+  }
+}
+
+@media (max-width: 767px) {
+  .documentCard {
+    flex-direction: column;
+  }
+
+  .documentActions {
+    width: 100%;
+  }
+
+  .actionButton {
+    flex: 1;
+    text-align: center;
   }
 }
 

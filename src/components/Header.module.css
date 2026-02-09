@@ -26,6 +26,12 @@
   align-items: center;
 }
 
+.logoImage {
+  height: 50px;
+  width: auto;
+  object-fit: contain;
+}
+
 .logoText {
   font-size: 28px;
   font-weight: 700;
@@ -58,6 +64,7 @@
 
 .dropdown {
   position: relative;
+  display: inline-block;
 }
 
 .arrow {
@@ -67,14 +74,30 @@
 
 .dropdownMenu {
   position: absolute;
-  top: 100%;
+  top: calc(100% + 4px);
   left: 0;
   background: white;
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
   border-radius: 8px;
-  padding: 10px 0;
+  padding: 8px 0;
   min-width: 220px;
-  margin-top: 10px;
+  z-index: 1001;
+  margin-top: 0;
+  /* Área invisible que conecta el trigger con el menú */
+  padding-top: 8px;
+  margin-top: -4px;
+}
+
+/* Área invisible de conexión que previene que se cierre al mover el cursor */
+.dropdownMenu::before {
+  content: '';
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  right: 0;
+  height: 8px;
+  background: transparent;
+  pointer-events: auto;
 }
 
 .dropdownItem {
@@ -114,6 +137,10 @@
     padding: 20px;
   }
 
+  .logoImage {
+    height: 40px;
+  }
+
   .nav {
     justify-content: center;
     gap: 15px;
@@ -128,4 +155,3 @@
     font-size: 12px;
   }
 }
-

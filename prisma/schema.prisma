@@ -5,14 +5,228 @@ generator client {
 
 datasource db {
   provider = "postgresql"
-  url      = env("DATABASE_URL")
 }
 
 model User {
-  email     String   @unique
-  password  String
-  name      String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  email         String      @unique
+  password      String
+  name          String?
+  rol           String      @default("Usuario") // "Administrador" o "Usuario"
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+  id            Int         @id @default(autoincrement())
+  planesAnuales PlanAnual[]
+}
+
+model Area {
+  id           Int           @id @default(autoincrement())
+  descripcion  String
+  sesionx2     Boolean?      @default(false)
+  competencias Competencia[]
+
+  @@map("area")
+}
+
+model Nivel {
+  id           Int           @id @default(autoincrement())
+  descripcion  String
+  competencias Competencia[]
+
+  @@map("nivel")
+}
+
+model Ciclo {
+  id          Int     @id @map("idciclo")
+  descripcion String
+  grados      Grado[]
+
+  @@map("ciclo")
+}
+
+model Grado {
+  id                Int               @id @default(autoincrement())
+  descripcion       String?
+  idciclo           Int
+  ciclo             Ciclo             @relation(fields: [idciclo], references: [id])
+  competencias      Competencia[]
+  comptransversales Comptransversal[]
+
+  @@map("grado")
+}
+
+model Comptransversal {
+  idcomtransversal       Int                    @id @map("idcomtransversal")
+  descripcion            String
+  idgrado                Int
+  grado                  Grado                  @relation(fields: [idgrado], references: [id])
+  capacidadtransversales Capacidadtransversal[]
+
+  @@map("comptransversal")
+}
+
+model Capacidadtransversal {
+  idcapacidadtransversal Int             @id @map("idcapacidadtransversal")
+  descripcion            String
+  idcomtransversal       Int
+  comptransversal        Comptransversal @relation(fields: [idcomtransversal], references: [idcomtransversal])
+  desempeniotransversales Desempeniotransversal[]
+
+  @@map("capacidadtransversal")
+}
+
+model Desempeniotransversal {
+  iddesempeniotransversal Int    @id @map("iddesempeniotransversal")
+  descripcion             String
+  idcapacidadtransversal  Int
+  capacidadtransversal    Capacidadtransversal @relation(fields: [idcapacidadtransversal], references: [idcapacidadtransversal])
+
+  @@map("desempeniotransversal")
+}
+
+model Competencia {
+  id                Int         @id @default(autoincrement())
+  descripcion       String
+  numeroCompetencia Int         @map("numero_competencia")
+  transversal       Boolean?    @default(false)
+  idarea            Int
+  idgrado           Int
+  idnivel           Int
+  area              Area        @relation(fields: [idarea], references: [id])
+  grado             Grado       @relation(fields: [idgrado], references: [id])
+  nivel             Nivel       @relation(fields: [idnivel], references: [id])
+  estandares        Estandar[]
+  capacidades       Capacidad[]
+
+  @@map("competencia")
+}
+
+model Estandar {
+  id            Int         @id @default(autoincrement())
+  descripcion   String
+  ordenamiento  Int
+  idcompetencia Int
+  competencia   Competencia @relation(fields: [idcompetencia], references: [id])
+  capacidades   Capacidad[]
+
+  @@map("estandar")
+}
+
+model Capacidad {
+  id            Int          @id @default(autoincrement())
+  descripcion   String
+  idcompetencia Int
+  idstandar     Int
+  competencia   Competencia  @relation(fields: [idcompetencia], references: [id])
+  estandar      Estandar     @relation(fields: [idstandar], references: [id])
+  desempenios   Desempenio[]
+
+  @@map("capacidad")
+}
+
+model Desempenio {
+  id          Int       @id @default(autoincrement())
+  descripcion String
+  idcapacidad Int
+  capacidad   Capacidad @relation(fields: [idcapacidad], references: [id])
+
+  @@map("desempenio")
+}
+
+model PlanAnual {
   id        Int      @id @default(autoincrement())
+  idusuario Int      @map("idusuario")
+  anio      Int
+  fechaHora DateTime @default(now()) @map("fechahora")
+
+  // Datos de Fase 1
+  area         String?
+  areaId       String? @map("area_id")
+  grado        String?
+  gradoId      String? @map("grado_id")
+  institucion  String?
+  docente      String?
+  dre          String?
+  ugel         String?
+  director     String?
+  coordinador  String?
+  nivel        String?
+  nivelId      String? @map("nivel_id")
+  departamento String?
+  provincia    String?
+  distrito     String?
+
+  // Datos de Fase 2 y variables dinámicas del template (JSON)
+  unidades          Json? // Array de unidades con todos sus datos
+  variablesTemplate Json? @map("variables_template") // Variables dinámicas del template
+
+  // Relación con User
+  usuario User @relation(fields: [idusuario], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([idusuario, anio])
+  @@map("plananual")
+}
+
+model Prompt {
+  idprompt          Int      @id @default(autoincrement()) @map("idprompt")
+  descripcion       String
+  contenido         String   @db.Text
+  fechacreacion     DateTime @default(now()) @map("fechacreacion")
+  fechamodificacion DateTime @updatedAt @map("fechamodificacion")
+  estado            String   @default("activo") // "activo" o "inactivo"
+
+  @@map("prompt")
+}
+
+model EnfoqueTransversal {
+  idenfoque      Int       @id @default(autoincrement()) @map("idenfoque")
+  descripcion    String
+  idnivel        String
+  idgrado        String
+  enfoqueValores EnfoVal[]
+
+  @@map("enfoquetransversal")
+}
+
+model Valores {
+  idvalor          Int              @id @default(autoincrement()) @map("idvalor")
+  descripcion      String
+  actitud          String
+  enfoqueValores   EnfoVal[]
+  valorActividades ValAct[]
+  actDemostrables  ActDemostrable[]
+
+  @@map("valores")
+}
+
+model EnfoVal {
+  idenfoval Int                @id @default(autoincrement()) @map("idenfoval")
+  idenfoque Int
+  idvalor   Int
+  enfoque   EnfoqueTransversal @relation(fields: [idenfoque], references: [idenfoque])
+  valor     Valores            @relation(fields: [idvalor], references: [idvalor])
+
+  @@map("enfo_val")
+}
+
+model ActDemostrable {
+  idactdemostrable Int      @id @default(autoincrement()) @map("idactdemostrable")
+  descripcion      String
+  idvalor          Int      @default(1)
+  valor            Valores  @relation(fields: [idvalor], references: [idvalor])
+  valorActividades ValAct[]
+
+  @@map("actdemostrable")
+}
+
+model ValAct {
+  idvalact         Int            @id @default(autoincrement()) @map("idvalact")
+  idvalor          Int
+  idactdemostrable Int
+  valor            Valores        @relation(fields: [idvalor], references: [idvalor])
+  actdemostrable   ActDemostrable @relation(fields: [idactdemostrable], references: [idactdemostrable])
+
+  @@map("val_act")
 }
