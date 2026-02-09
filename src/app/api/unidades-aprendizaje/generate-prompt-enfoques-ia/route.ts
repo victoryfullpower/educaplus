@@ -224,13 +224,13 @@ export async function POST(request: NextRequest) {
     let textoLimpio = gptResponse.replace(/<br\s*\/?>/gi, '\n').replace(/<BR\s*\/?>/gi, '\n')
 
     // Dividir el texto en párrafos
-    const parrafos = textoLimpio.split('\n').filter(p => p.trim() || p === '')
+    const parrafos = textoLimpio.split('\n').filter((p: string) => p.trim() || p === '')
 
     // Crear el documento Word con la respuesta de GPT
     const doc = new Document({
       sections: [{
         properties: {},
-        children: parrafos.map(parrafo => 
+        children: parrafos.map((parrafo: string) => 
           new Paragraph({
             children: [
               new TextRun({

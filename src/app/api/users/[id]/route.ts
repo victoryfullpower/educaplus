@@ -4,7 +4,7 @@ import { getUserId } from '@/lib/auth'
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> | { id: string } }
 ) {
   try {
     const userId = await getUserId(request)
@@ -16,7 +16,9 @@ export async function GET(
       )
     }
 
-    const id = parseInt(params.id, 10)
+    // Manejar params como Promise o objeto directo (Next.js 16)
+    const resolvedParams = await Promise.resolve(params)
+    const id = parseInt(resolvedParams.id, 10)
     
     if (isNaN(id)) {
       return NextResponse.json(

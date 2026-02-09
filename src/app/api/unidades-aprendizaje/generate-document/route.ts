@@ -529,20 +529,26 @@ export async function POST(request: NextRequest) {
     // Obtener enfoques transversales, valores y actitudes generados por IA
     let enfoquesArray: Array<{ enfoque: string; valor: string; actitud: string }> = []
     
+    // Obtener datos necesarios del formData para enfoques (si no están definidos)
+    const unidadParaEnfoques = formData.unidad
+    const areaIdParaEnfoques = formData.areaId || (formData.area && typeof formData.area === 'string' ? formData.area.split('|')[0] : formData.area)
+    const gradoIdParaEnfoques = formData.gradoId || (formData.grado && typeof formData.grado === 'string' ? formData.grado.split('|')[0] : formData.grado)
+    const anioParaEnfoques = formData.anio || new Date().getFullYear()
+    
     // Generar enfoques con IA (igual que el botón "IA genera enfoque")
     if (process.env.OPENAI_API_KEY) {
       try {
         // Obtener título de la unidad del plan anual
         let tituloUnidadParaEnfoques = tituloUnidad
-        if (!tituloUnidadParaEnfoques && unidad && areaId && gradoId) {
+        if (!tituloUnidadParaEnfoques && unidadParaEnfoques && areaIdParaEnfoques && gradoIdParaEnfoques) {
           const userId = await getUserId(request)
           if (userId) {
             const planAnual = await prisma.planAnual.findFirst({
               where: {
                 idusuario: userId,
-                anio: parseInt(String(anio)),
-                areaId: String(areaId),
-                gradoId: String(gradoId)
+                anio: parseInt(String(anioParaEnfoques)),
+                areaId: String(areaIdParaEnfoques),
+                gradoId: String(gradoIdParaEnfoques)
               }
             })
 
@@ -551,7 +557,7 @@ export async function POST(request: NextRequest) {
                 ? planAnual.unidades 
                 : JSON.parse(planAnual.unidades as string)
 
-              const unidadNumero = parseInt(String(unidad), 10)
+              const unidadNumero = parseInt(String(unidadParaEnfoques), 10)
               let unidadData = null
 
               if (Array.isArray(unidades) && unidades[unidadNumero]) {
@@ -666,13 +672,13 @@ export async function POST(request: NextRequest) {
             if (gptResponse) {
               // Parsear la respuesta de GPT para extraer SOLO las descripciones de enfoques
               // Luego buscar en la BD por descripción y obtener valores y actitudes
-              const lineas = gptResponse.split('\n').filter(l => l.trim())
+              const lineas = gptResponse.split('\n').filter((l: string) => l.trim())
               
               // Array para almacenar las descripciones de enfoques extraídas de la IA
               const descripcionesEnfoquesIA: string[] = []
               
               // Intentar parsear como tabla (formato con pipes)
-              const lineasConPipes = lineas.filter(l => l.trim().includes('|') && l.trim().split('|').length >= 3)
+              const lineasConPipes = lineas.filter((l: string) => l.trim().includes('|') && l.trim().split('|').length >= 3)
               
               if (lineasConPipes.length > 0) {
                 // Es una tabla, extraer solo la primera columna (descripción del enfoque)
@@ -680,11 +686,11 @@ export async function POST(request: NextRequest) {
                   // Ignorar líneas separadoras (como |---|---|)
                   if (linea.trim().match(/^[\|\s\-:]+$/)) continue
                   
-                  const columnas = linea.split('|').map(col => col.trim()).filter(col => col && !col.match(/^[\-:]+$/))
+                  const columnas = linea.split('|').map((col: string) => col.trim()).filter((col: string) => col && !col.match(/^[\-:]+$/))
                   
                   if (columnas.length >= 1) {
                     // Ignorar la fila de encabezado si contiene "ENFOQUE", "VALOR", "ACTITUD"
-                    const esEncabezado = columnas.some(col => 
+                    const esEncabezado = columnas.some((col: string) => 
                       col.toUpperCase().includes('ENFOQUE') || 
                       col.toUpperCase().includes('VALOR') || 
                       col.toUpperCase().includes('ACTITUD')
@@ -881,7 +887,7 @@ export async function POST(request: NextRequest) {
         
         // Convertir saltos de línea en saltos de línea XML
         // Cada línea de estándar debe estar en un <w:r> separado con <w:br/> entre ellas
-        const lineasEstandares = comp.estandares.split('\n').filter(line => line.trim() !== '')
+        const lineasEstandares = comp.estandares.split('\n').filter((line: string) => line.trim() !== '')
         let estandaresXML = ''
         
         if (lineasEstandares.length === 0) {
@@ -1735,7 +1741,7 @@ export async function POST(request: NextRequest) {
                 if (lineas.length === 0) return { esTabla: false }
                 
                 // Detectar si las líneas tienen pipes (formato de tabla)
-                const lineasConPipes = lineas.filter(l => l.trim().includes('|') && l.trim().split('|').length > 2)
+                const lineasConPipes = lineas.filter((l: string) => l.trim().includes('|') && l.trim().split('|').length > 2)
                 
                 if (lineasConPipes.length === 0) return { esTabla: false }
                 
@@ -1856,7 +1862,7 @@ export async function POST(request: NextRequest) {
                     let celdaLimpia = (celda || ' ').replace(/<br\s*\/?>/gi, '\n').replace(/<BR\s*\/?>/gi, '\n')
                     
                     // Si la celda tiene múltiples líneas (por <br> convertidos), crear múltiples párrafos
-                    const lineasCelda = celdaLimpia.split('\n').filter(l => l.trim() || l === '')
+                    const lineasCelda = celdaLimpia.split('\n').filter((l: string) => l.trim() || l === '')
                     
                     tablaXML += `<w:tc><w:tcPr><w:tcW w:w="${anchoColumna}" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="FFFFFF"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="4" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="top"/></w:tcPr>`
                     

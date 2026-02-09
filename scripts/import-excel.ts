@@ -2,11 +2,26 @@ import * as XLSX from 'xlsx';
 import * as path from 'path';
 import * as dotenv from 'dotenv';
 import { PrismaClient } from '../src/generated/prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
+import { Pool } from 'pg';
 
 // Cargar variables de entorno
 dotenv.config();
 
-const prisma = new PrismaClient();
+if (!process.env.DATABASE_URL) {
+  throw new Error('DATABASE_URL no está definida en las variables de entorno');
+}
+
+// Crear el adapter para PostgreSQL (Prisma 7)
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+});
+const adapter = new PrismaPg(pool);
+
+const prisma = new PrismaClient({
+  adapter,
+  log: process.env.NODE_ENV === 'development' ? ['error', 'warn'] : ['error'],
+});
 
 interface ExcelRow {
   [key: string]: any;
@@ -62,10 +77,27 @@ async function importExcel() {
     const gradoSheet = workbook.Sheets['grados'];
     const gradoData: ExcelRow[] = XLSX.utils.sheet_to_json(gradoSheet);
     for (const row of gradoData) {
+      // El campo idciclo es requerido. Si no está en el Excel, usar un valor por defecto o mapear según el grado
+      // Por ejemplo: grados 1-2 = ciclo 1, grados 3-4 = ciclo 2, grado 5 = ciclo 3
+      const idgrado = row.idgrado;
+      let idciclo = row.idciclo;
+      
+      // Si no hay idciclo en el Excel, calcularlo basado en el grado
+      if (!idciclo) {
+        if (idgrado <= 2) {
+          idciclo = 1; // Ciclo I
+        } else if (idgrado <= 4) {
+          idciclo = 2; // Ciclo II
+        } else {
+          idciclo = 3; // Ciclo III
+        }
+      }
+      
       await prisma.grado.create({
         data: {
-          id: row.idgrado,
+          id: idgrado,
           descripcion: row.Descripcion || row['DESCRIPCION '] || null,
+          idciclo: idciclo,
         },
       });
     }

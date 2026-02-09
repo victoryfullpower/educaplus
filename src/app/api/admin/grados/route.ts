@@ -24,9 +24,18 @@ export async function POST(request: NextRequest) {
     const check = await checkAdmin(request)
     if (check.error) return NextResponse.json({ error: check.error }, { status: check.status })
 
-    const { descripcion } = await request.json()
+    const { descripcion, idciclo } = await request.json()
 
-    const grado = await prisma.grado.create({ data: { descripcion: descripcion || null } })
+    if (!idciclo) {
+      return NextResponse.json({ error: 'idciclo es requerido' }, { status: 400 })
+    }
+
+    const grado = await prisma.grado.create({ 
+      data: { 
+        descripcion: descripcion || null,
+        idciclo: parseInt(idciclo)
+      } 
+    })
     return NextResponse.json({ message: 'Grado creado exitosamente', grado })
   } catch (error: any) {
     if (error.code === 'P2002') {

@@ -150,7 +150,7 @@ export async function POST(request: NextRequest) {
 
     const tiempoTotal = ((Date.now() - tiempoInicio) / 1000).toFixed(2)
     console.log(`✅ [FIN] Proceso completado en ${tiempoTotal}s totales`)
-    console.log(`📊 [RESUMEN] Lectura JSON: ${tiempoLectura}s | Reemplazo: ${tiempoReemplazo}s | IA: ${tiempoIATotal}s | Word: ${tiempoWord}s | Total: ${tiempoTotal}s`)
+    console.log(`📊 [RESUMEN] Lectura JSON: ${tiempoLectura}s | Reemplazo: ${tiempoReemplazo}s | Word: ${tiempoWord}s | Total: ${tiempoTotal}s`)
 
     // Devolver el archivo como respuesta
     // docBuffer es un Buffer de Node.js, NextResponse lo acepta directamente

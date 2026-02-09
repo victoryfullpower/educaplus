@@ -185,7 +185,7 @@ export default function UnidadesAprendizajePage() {
               setFormData(prev => ({ ...prev, producto: data.producto }))
             }
           } else {
-            setDatosDesdePlanAnual({ situacionSignificativa: null, producto: null })
+            setDatosDesdePlanAnual({ situacionSignificativa: null, producto: null, tituloUnidad: null })
           }
         } catch (error) {
           console.error('Error al cargar datos de unidad:', error)

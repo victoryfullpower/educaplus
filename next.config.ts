@@ -10,8 +10,9 @@ const nextConfig: NextConfig = {
     unoptimized: true
   },
   // Configuración para GitHub Pages: https://victoryfullpower.github.io/educaplus/
-  basePath: process.env.NODE_ENV === 'production' ? '/educaplus' : '',
-  assetPrefix: process.env.NODE_ENV === 'production' ? '/educaplus/' : ''
+  // Solo usar basePath cuando se despliega en GitHub Pages, no en producción local
+  basePath: process.env.BASE_PATH || '',
+  assetPrefix: process.env.BASE_PATH ? `${process.env.BASE_PATH}/` : ''
 }
 
 export default nextConfig

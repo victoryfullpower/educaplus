@@ -40,13 +40,18 @@ export async function POST(request: NextRequest) {
     const check = await checkAdmin(request)
     if (check.error) return NextResponse.json({ error: check.error }, { status: check.status })
 
-    const { descripcion, idcomtransversal } = await request.json()
+    const { idcapacidadtransversal, descripcion, idcomtransversal } = await request.json()
     if (!descripcion || !idcomtransversal) {
       return NextResponse.json({ error: 'Descripción e idcomtransversal son requeridos' }, { status: 400 })
     }
 
+    if (!idcapacidadtransversal) {
+      return NextResponse.json({ error: 'idcapacidadtransversal es requerido' }, { status: 400 })
+    }
+
     const capacidadtransversal = await prisma.capacidadtransversal.create({
       data: {
+        idcapacidadtransversal: parseInt(idcapacidadtransversal),
         descripcion,
         idcomtransversal: parseInt(idcomtransversal)
       }

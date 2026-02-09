@@ -830,7 +830,7 @@ export async function POST(request: NextRequest) {
     console.log('✅ [DEBUG] Buffer generado, devolviendo documento...')
 
     // Devolver el archivo como respuesta
-    return new NextResponse(buf, {
+    return new NextResponse(buf as any, {
       headers: {
         'Content-Type': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
         'Content-Disposition': `attachment; filename="${fileName}"`,

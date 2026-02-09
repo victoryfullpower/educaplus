@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
 import Header from '@/components/Header'
 import { getDepartamentos, getProvinciasByDepartamento, getDistritosByProvincia } from '@/lib/ubigeos'
@@ -56,7 +56,7 @@ interface Unidad {
   conocimientos: string
 }
 
-export default function ProgramacionAnualPage() {
+function ProgramacionAnualContent() {
   const searchParams = useSearchParams()
   const planIdParam = searchParams.get('planId')
   
@@ -2501,6 +2501,21 @@ export default function ProgramacionAnualPage() {
         </div>
       )}
     </>
+  )
+}
+
+export default function ProgramacionAnualPage() {
+  return (
+    <Suspense fallback={
+      <>
+        <Header />
+        <div className={styles.container}>
+          <div className={styles.loading}>Cargando...</div>
+        </div>
+      </>
+    }>
+      <ProgramacionAnualContent />
+    </Suspense>
   )
 }
 
