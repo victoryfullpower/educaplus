@@ -47,9 +47,12 @@ export async function POST(request: NextRequest) {
     })
 
     // Simulamos una sesión simple (en producción usa NextAuth o JWT)
+    // secure: solo true si la petición es HTTPS (evita que falle en http://IP o localhost)
+    const url = request.nextUrl ?? new URL(request.url)
+    const isHttps = url.protocol === 'https:' || request.headers.get('x-forwarded-proto') === 'https'
     response.cookies.set('user-id', user.id.toString(), {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
+      secure: isHttps,
       sameSite: 'lax',
       maxAge: 60 * 60 * 24 * 7 // 7 días
     })
