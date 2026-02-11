@@ -305,8 +305,8 @@ export async function POST(request: NextRequest) {
           })
           
           if (competencias.length > 0) {
-            // Combinar todas las competencias en un texto
-            competenciasTexto = competencias.map(c => c.descripcion).join('; ')
+            // Combinar todas las competencias en un texto con viñetas
+            competenciasTexto = competencias.map(c => `• ${c.descripcion}`).join('\n')
             console.log(`✅ [DEBUG] ${competencias.length} competencia(s) encontrada(s) para unidad ${i}: "${competenciasTexto.substring(0, 100)}..."`)
           } else {
             console.warn(`⚠️ [DEBUG] No se encontraron competencias con IDs: ${competenciasIds.join(', ')}`)

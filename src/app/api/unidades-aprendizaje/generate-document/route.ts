@@ -885,24 +885,47 @@ export async function POST(request: NextRequest) {
         const competenciaNumeroEscapado = escaparXML(comp.competencianro)
         const competenciaDescripcionEscapado = escaparXML(comp.competenciadescripcion)
         
-        // Convertir saltos de línea en saltos de línea XML
-        // Cada línea de estándar debe estar en un <w:r> separado con <w:br/> entre ellas
+        // Convertir estándares en líneas para determinar si necesitamos combinar celdas
         const lineasEstandares = comp.estandares.split('\n').filter((line: string) => line.trim() !== '')
-        let estandaresXML = ''
+        const lineasEstandaresCount = lineasEstandares.length
         
-        if (lineasEstandares.length === 0) {
-          estandaresXML = '<w:r><w:t></w:t></w:r>'
+        // Construir la tabla con bordes dobles y color #00B050 (mismo diseño que enfoques)
+        // Centrar la tabla usando w:jc w:val="center"
+        let tablaXML = '<w:tbl><w:tblPr><w:tblStyle w:val="TableGrid"/><w:tblW w:w="14869" w:type="dxa"/><w:jc w:val="center"/><w:tblBorders><w:top w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:left w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:right w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:insideH w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:insideV w:val="double" w:sz="4" w:space="0" w:color="00B050"/></w:tblBorders><w:tblLayout w:type="fixed"/></w:tblPr><w:tblGrid><w:gridCol w:w="2962"/><w:gridCol w:w="11907"/></w:tblGrid>'
+        
+        // Header row
+        tablaXML += `<w:tr><w:trPr><w:trHeight w:val="340"/></w:trPr><w:tc><w:tcPr><w:tcW w:w="2962" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="C1F0C7"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="8" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="center"/></w:tcPr><w:p><w:pPr><w:jc w:val="center"/><w:rPr><w:b/></w:rPr></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t>${competenciaNumeroEscapado}</w:t></w:r></w:p></w:tc><w:tc><w:tcPr><w:tcW w:w="11907" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="C1F0C7"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="4" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="center"/></w:tcPr><w:p><w:pPr><w:jc w:val="center"/><w:rPr><w:b/></w:rPr></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t>ESTÁNDAR DE APRENDIZAJE</w:t></w:r></w:p></w:tc></w:tr>`
+        
+        // Generar filas con combinación de celdas verticales (si hay múltiples estándares)
+        if (lineasEstandaresCount === 0) {
+          // Si no hay estándares, crear una fila vacía
+          tablaXML += `<w:tr><w:trPr><w:trHeight w:val="340"/></w:trPr><w:tc><w:tcPr><w:tcW w:w="2962" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="FFFFFF"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="8" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="top"/></w:tcPr><w:p><w:pPr><w:spacing w:after="0"/></w:pPr><w:r><w:t>${competenciaDescripcionEscapado}</w:t></w:r></w:p></w:tc><w:tc><w:tcPr><w:tcW w:w="11907" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="FFFFFF"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="4" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="top"/></w:tcPr><w:p><w:pPr><w:spacing w:after="0"/></w:pPr><w:r><w:t></w:t></w:r></w:p></w:tc></w:tr>`
         } else {
+          // Generar una fila por cada estándar, combinando la celda de competencia verticalmente
           lineasEstandares.forEach((linea, index) => {
-            if (index > 0) {
-              estandaresXML += '<w:r><w:br/></w:r>'
-            }
             const lineaEscapada = escaparXML(linea.trim())
-            estandaresXML += `<w:r><w:t>${lineaEscapada}</w:t></w:r>`
+            const esPrimeraFila = index === 0
+            
+            tablaXML += `<w:tr><w:trPr><w:trHeight w:val="340"/></w:trPr>`
+            
+            // Columna 1: COMPETENCIA (combinar celdas verticalmente)
+            if (esPrimeraFila) {
+              // Primera fila: usar vMerge="restart"
+              tablaXML += `<w:tc><w:tcPr><w:tcW w:w="2962" w:type="dxa"/><w:vMerge w:val="restart"/><w:shd w:val="clear" w:color="auto" w:fill="FFFFFF"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="8" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="top"/></w:tcPr><w:p><w:pPr><w:spacing w:after="0"/></w:pPr><w:r><w:t>${competenciaDescripcionEscapado}</w:t></w:r></w:p></w:tc>`
+            } else {
+              // Filas siguientes: usar vMerge (celda vacía, solo propiedades)
+              tablaXML += `<w:tc><w:tcPr><w:vMerge/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="8" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders></w:tcPr><w:p/></w:tc>`
+            }
+            
+            // Columna 2: ESTÁNDAR DE APRENDIZAJE (sin combinar)
+            tablaXML += `<w:tc><w:tcPr><w:tcW w:w="11907" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="FFFFFF"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="4" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="top"/></w:tcPr><w:p><w:pPr><w:spacing w:after="0"/></w:pPr><w:r><w:t>${lineaEscapada}</w:t></w:r></w:p></w:tc>`
+            
+            tablaXML += `</w:tr>`
           })
         }
         
-        return `<w:tbl><w:tblPr><w:tblStyle w:val="TableGrid"/><w:tblW w:w="14869" w:type="dxa"/><w:tblBorders><w:top w:val="single" w:sz="4" w:space="0" w:color="000000"/><w:left w:val="single" w:sz="4" w:space="0" w:color="000000"/><w:bottom w:val="single" w:sz="4" w:space="0" w:color="000000"/><w:right w:val="single" w:sz="4" w:space="0" w:color="000000"/><w:insideH w:val="single" w:sz="4" w:space="0" w:color="000000"/><w:insideV w:val="single" w:sz="4" w:space="0" w:color="000000"/></w:tblBorders><w:tblLayout w:type="fixed"/></w:tblPr><w:tblGrid><w:gridCol w:w="2962"/><w:gridCol w:w="11907"/></w:tblGrid><w:tr><w:trPr><w:trHeight w:val="340"/></w:trPr><w:tc><w:tcPr><w:tcW w:w="2962" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="C1F0C7"/><w:tcBorders><w:top w:val="single" w:sz="4" w:color="000000"/><w:left w:val="single" w:sz="4" w:color="000000"/><w:bottom w:val="single" w:sz="4" w:color="000000"/><w:right w:val="single" w:sz="4" w:color="000000"/></w:tcBorders><w:vAlign w:val="center"/></w:tcPr><w:p><w:pPr><w:jc w:val="center"/><w:rPr><w:b/></w:rPr></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t>${competenciaNumeroEscapado}</w:t></w:r></w:p></w:tc><w:tc><w:tcPr><w:tcW w:w="11907" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="C1F0C7"/><w:tcBorders><w:top w:val="single" w:sz="4" w:color="000000"/><w:left w:val="single" w:sz="4" w:color="000000"/><w:bottom w:val="single" w:sz="4" w:color="000000"/><w:right w:val="single" w:sz="4" w:color="000000"/></w:tcBorders><w:vAlign w:val="center"/></w:tcPr><w:p><w:pPr><w:jc w:val="center"/><w:rPr><w:b/></w:rPr></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t>ESTÁNDAR DE APRENDIZAJE</w:t></w:r></w:p></w:tc></w:tr><w:tr><w:trPr><w:trHeight w:val="340"/></w:trPr><w:tc><w:tcPr><w:tcW w:w="2962" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="FFFFFF"/><w:tcBorders><w:top w:val="single" w:sz="4" w:color="000000"/><w:left w:val="single" w:sz="4" w:color="000000"/><w:bottom w:val="single" w:sz="4" w:color="000000"/><w:right w:val="single" w:sz="4" w:color="000000"/></w:tcBorders><w:vAlign w:val="top"/></w:tcPr><w:p><w:pPr><w:spacing w:after="0"/></w:pPr><w:r><w:t>${competenciaDescripcionEscapado}</w:t></w:r></w:p></w:tc><w:tc><w:tcPr><w:tcW w:w="11907" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="FFFFFF"/><w:tcBorders><w:top w:val="single" w:sz="4" w:color="000000"/><w:left w:val="single" w:sz="4" w:color="000000"/><w:bottom w:val="single" w:sz="4" w:color="000000"/><w:right w:val="single" w:sz="4" w:color="000000"/></w:tcBorders><w:vAlign w:val="top"/></w:tcPr><w:p><w:pPr><w:spacing w:after="0"/></w:pPr>${estandaresXML}</w:p></w:tc></w:tr></w:tbl>`
+        tablaXML += '</w:tbl>'
+        return tablaXML
       }
       
       // Generar todas las tablas para cada competencia
@@ -928,8 +951,8 @@ export async function POST(request: NextRequest) {
         console.log(`📊 [{{competencia}}] Número de <w:tbl> en concatenación: ${(tablasConcatenadas.match(/<w:tbl>/g) || []).length}`)
         console.log(`📊 [{{competencia}}] Número de </w:tbl> en concatenación: ${(tablasConcatenadas.match(/<\/w:tbl>/g) || []).length}`)
       } else {
-        // Si no hay competencias, generar tabla vacía
-        tablasConcatenadas = `<w:tbl><w:tblPr><w:tblStyle w:val="TableGrid"/><w:tblW w:w="14869" w:type="dxa"/><w:tblBorders><w:top w:val="single" w:sz="4" w:space="0" w:color="000000"/><w:left w:val="single" w:sz="4" w:space="0" w:color="000000"/><w:bottom w:val="single" w:sz="4" w:space="0" w:color="000000"/><w:right w:val="single" w:sz="4" w:space="0" w:color="000000"/><w:insideH w:val="single" w:sz="4" w:space="0" w:color="000000"/><w:insideV w:val="single" w:sz="4" w:space="0" w:color="000000"/></w:tblBorders><w:tblLayout w:type="fixed"/></w:tblPr><w:tblGrid><w:gridCol w:w="2962"/><w:gridCol w:w="11907"/></w:tblGrid><w:tr><w:trPr><w:trHeight w:val="340"/></w:trPr><w:tc><w:tcPr><w:tcW w:w="2962" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="C1F0C7"/><w:tcBorders><w:top w:val="single" w:sz="4" w:color="000000"/><w:left w:val="single" w:sz="4" w:color="000000"/><w:bottom w:val="single" w:sz="4" w:color="000000"/><w:right w:val="single" w:sz="4" w:color="000000"/></w:tcBorders><w:vAlign w:val="center"/></w:tcPr><w:p><w:pPr><w:jc w:val="center"/></w:pPr><w:r><w:t></w:t></w:r></w:p></w:tc><w:tc><w:tcPr><w:tcW w:w="11907" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="C1F0C7"/><w:tcBorders><w:top w:val="single" w:sz="4" w:color="000000"/><w:left w:val="single" w:sz="4" w:color="000000"/><w:bottom w:val="single" w:sz="4" w:color="000000"/><w:right w:val="single" w:sz="4" w:color="000000"/></w:tcBorders><w:vAlign w:val="center"/></w:tcPr><w:p><w:pPr><w:jc w:val="center"/></w:pPr><w:r><w:t></w:t></w:r></w:p></w:tc></w:tr><w:tr><w:trPr><w:trHeight w:val="340"/></w:trPr><w:tc><w:tcPr><w:tcW w:w="2962" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="FFFFFF"/><w:tcBorders><w:top w:val="single" w:sz="4" w:color="000000"/><w:left w:val="single" w:sz="4" w:color="000000"/><w:bottom w:val="single" w:sz="4" w:color="000000"/><w:right w:val="single" w:sz="4" w:color="000000"/></w:tcBorders><w:vAlign w:val="center"/></w:tcPr><w:p><w:pPr><w:jc w:val="center"/></w:pPr><w:r><w:t></w:t></w:r></w:p></w:tc><w:tc><w:tcPr><w:tcW w:w="11907" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="FFFFFF"/><w:tcBorders><w:top w:val="single" w:sz="4" w:color="000000"/><w:left w:val="single" w:sz="4" w:color="000000"/><w:bottom w:val="single" w:sz="4" w:color="000000"/><w:right w:val="single" w:sz="4" w:color="000000"/></w:tcBorders><w:vAlign w:val="center"/></w:tcPr><w:p><w:pPr><w:jc w:val="center"/></w:pPr><w:r><w:t></w:t></w:r></w:p></w:tc></w:tr></w:tbl>`
+        // Si no hay competencias, generar tabla vacía con el mismo diseño (bordes dobles #00B050)
+        tablasConcatenadas = `<w:tbl><w:tblPr><w:tblStyle w:val="TableGrid"/><w:tblW w:w="14869" w:type="dxa"/><w:tblBorders><w:top w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:left w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:right w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:insideH w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:insideV w:val="double" w:sz="4" w:space="0" w:color="00B050"/></w:tblBorders><w:tblLayout w:type="fixed"/></w:tblPr><w:tblGrid><w:gridCol w:w="2962"/><w:gridCol w:w="11907"/></w:tblGrid><w:tr><w:trPr><w:trHeight w:val="340"/></w:trPr><w:tc><w:tcPr><w:tcW w:w="2962" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="C1F0C7"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="8" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="center"/></w:tcPr><w:p><w:pPr><w:jc w:val="center"/></w:pPr><w:r><w:t></w:t></w:r></w:p></w:tc><w:tc><w:tcPr><w:tcW w:w="11907" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="C1F0C7"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="4" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="center"/></w:tcPr><w:p><w:pPr><w:jc w:val="center"/></w:pPr><w:r><w:t></w:t></w:r></w:p></w:tc></w:tr><w:tr><w:trPr><w:trHeight w:val="340"/></w:trPr><w:tc><w:tcPr><w:tcW w:w="2962" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="FFFFFF"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="8" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="center"/></w:tcPr><w:p><w:pPr><w:jc w:val="center"/></w:pPr><w:r><w:t></w:t></w:r></w:p></w:tc><w:tc><w:tcPr><w:tcW w:w="11907" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="FFFFFF"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="4" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="center"/></w:tcPr><w:p><w:pPr><w:jc w:val="center"/></w:pPr><w:r><w:t></w:t></w:r></w:p></w:tc></w:tr></w:tbl>`
       }
       
       const tabla = tablasConcatenadas
@@ -1021,8 +1044,54 @@ export async function POST(request: NextRequest) {
               }
               const paraEnd = documentXml.indexOf('</w:p>', idxComp)
               
+              // Verificar si el párrafo anterior (el del título verde) tiene algún formato especial
+              // que pueda estar causando el espacio. Buscar el párrafo inmediatamente anterior.
+              if (paraStart > 0) {
+                const idxParrafoAnterior = documentXml.lastIndexOf('<w:p', paraStart - 1)
+                if (idxParrafoAnterior > -1) {
+                  const finParrafoAnterior = documentXml.indexOf('</w:p>', idxParrafoAnterior)
+                  if (finParrafoAnterior > -1 && finParrafoAnterior < paraStart) {
+                    // Verificar si el párrafo anterior tiene indentación que pueda estar afectando
+                    const parrafoAnterior = documentXml.substring(idxParrafoAnterior, finParrafoAnterior + 6)
+                    // Si el párrafo anterior tiene indentación, no debería afectar a la tabla siguiente
+                    // pero podemos verificar para debugging
+                  }
+                }
+              }
+              
               if (paraStart > -1 && paraEnd > -1 && paraEnd > paraStart) {
-                // Reemplazar TODO el párrafo (desde <w:p hasta </w:p>) con la tabla
+                // Asegurarse de que todas las tablas estén centradas
+                // Verificar que todas tengan w:jc w:val="center" (puede haber múltiples tablas concatenadas)
+                let tablaCentrada = tabla
+                
+                // Si alguna tabla no tiene w:jc, agregarlo después de w:tblW
+                if (!tablaCentrada.includes('<w:jc')) {
+                  tablaCentrada = tablaCentrada.replace(
+                    /(<w:tblW[^>]*>)/,
+                    '$1<w:jc w:val="center"/>'
+                  )
+                } else {
+                  // Si ya tiene w:jc, asegurarse de que esté en "center"
+                  tablaCentrada = tablaCentrada.replace(
+                    /<w:jc\s+w:val="[^"]*"/g,
+                    '<w:jc w:val="center"'
+                  )
+                }
+                
+                // Eliminar cualquier w:tblInd que pueda interferir con el centrado
+                tablaCentrada = tablaCentrada.replace(
+                  /<w:tblInd[^>]*\/?>/g,
+                  ''
+                )
+                
+                // Extraer el párrafo original para verificar si tiene indentación
+                const parrafoOriginal = documentXml.substring(paraStart, paraEnd + 6)
+                
+                // Si el párrafo tiene indentación (w:ind), la tabla heredará ese espacio
+                // Por eso simplemente reemplazamos el párrafo completo con la tabla centrada
+                // La tabla con w:jc w:val="center" se centrará independientemente de la indentación del párrafo
+                
+                // Reemplazar TODO el párrafo (desde <w:p hasta </w:p>) con la tabla centrada
                 const antes = documentXml.substring(0, paraStart)
                 const despues = documentXml.substring(paraEnd + 6) // +6 para saltar </w:p>
                 
@@ -1030,8 +1099,8 @@ export async function POST(request: NextRequest) {
                 if (!antes.includes('<w:document')) {
                   insertarTabla = false
                 } else {
-                  // Construir el nuevo XML
-                  const nuevoDocumentXml = antes + tabla + despues
+                  // Construir el nuevo XML con la tabla centrada
+                  const nuevoDocumentXml = antes + tablaCentrada + despues
                   
                   // Validar que las tablas estén balanceadas
                   const conteoTablasAbiertas = (nuevoDocumentXml.match(/<w:tbl>/g) || []).length
@@ -1092,11 +1161,11 @@ export async function POST(request: NextRequest) {
         const generarTablaEnfoques = (): string => {
           if (enfoquesArray.length === 0) {
             // Tabla vacía con header de 3 columnas (mismo diseño que competencias transversales)
-            return `<w:tbl><w:tblPr><w:tblStyle w:val="TableGrid"/><w:tblW w:w="14869" w:type="dxa"/><w:tblBorders><w:top w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:left w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:right w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:insideH w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:insideV w:val="double" w:sz="4" w:space="0" w:color="00B050"/></w:tblBorders><w:tblLayout w:type="fixed"/></w:tblPr><w:tblGrid><w:gridCol w:w="4956"/><w:gridCol w:w="4956"/><w:gridCol w:w="4957"/></w:tblGrid><w:tr><w:trPr><w:trHeight w:val="340"/></w:trPr><w:tc><w:tcPr><w:tcW w:w="4956" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="C1F0C7"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="8" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="center"/></w:tcPr><w:p><w:pPr><w:jc w:val="center"/><w:rPr><w:b/></w:rPr></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t>ENFOQUES TRANSVERSALES</w:t></w:r></w:p></w:tc><w:tc><w:tcPr><w:tcW w:w="4956" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="C1F0C7"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="4" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="center"/></w:tcPr><w:p><w:pPr><w:jc w:val="center"/><w:rPr><w:b/></w:rPr></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t>VALORES</w:t></w:r></w:p></w:tc><w:tc><w:tcPr><w:tcW w:w="4957" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="C1F0C7"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="4" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="center"/></w:tcPr><w:p><w:pPr><w:jc w:val="center"/><w:rPr><w:b/></w:rPr></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t>ACTITUDES</w:t></w:r></w:p></w:tc></w:tr></w:tbl>`
+            return `<w:tbl><w:tblPr><w:tblStyle w:val="TableGrid"/><w:tblW w:w="14869" w:type="dxa"/><w:jc w:val="center"/><w:tblBorders><w:top w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:left w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:right w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:insideH w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:insideV w:val="double" w:sz="4" w:space="0" w:color="00B050"/></w:tblBorders><w:tblLayout w:type="fixed"/></w:tblPr><w:tblGrid><w:gridCol w:w="4956"/><w:gridCol w:w="4956"/><w:gridCol w:w="4957"/></w:tblGrid><w:tr><w:trPr><w:trHeight w:val="340"/></w:trPr><w:tc><w:tcPr><w:tcW w:w="4956" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="C1F0C7"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="8" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="center"/></w:tcPr><w:p><w:pPr><w:jc w:val="center"/><w:rPr><w:b/></w:rPr></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t>ENFOQUES TRANSVERSALES</w:t></w:r></w:p></w:tc><w:tc><w:tcPr><w:tcW w:w="4956" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="C1F0C7"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="4" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="center"/></w:tcPr><w:p><w:pPr><w:jc w:val="center"/><w:rPr><w:b/></w:rPr></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t>VALORES</w:t></w:r></w:p></w:tc><w:tc><w:tcPr><w:tcW w:w="4957" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="C1F0C7"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="4" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="center"/></w:tcPr><w:p><w:pPr><w:jc w:val="center"/><w:rPr><w:b/></w:rPr></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t>ACTITUDES</w:t></w:r></w:p></w:tc></w:tr></w:tbl>`
           }
           
           // Construir la tabla con 3 columnas (mismo diseño que competencias transversales)
-          let tablaXML = '<w:tbl><w:tblPr><w:tblStyle w:val="TableGrid"/><w:tblW w:w="14869" w:type="dxa"/><w:tblBorders><w:top w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:left w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:right w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:insideH w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:insideV w:val="double" w:sz="4" w:space="0" w:color="00B050"/></w:tblBorders><w:tblLayout w:type="fixed"/></w:tblPr><w:tblGrid><w:gridCol w:w="4956"/><w:gridCol w:w="4956"/><w:gridCol w:w="4957"/></w:tblGrid>'
+          let tablaXML = '<w:tbl><w:tblPr><w:tblStyle w:val="TableGrid"/><w:tblW w:w="14869" w:type="dxa"/><w:jc w:val="center"/><w:tblBorders><w:top w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:left w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:right w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:insideH w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:insideV w:val="double" w:sz="4" w:space="0" w:color="00B050"/></w:tblBorders><w:tblLayout w:type="fixed"/></w:tblPr><w:tblGrid><w:gridCol w:w="4956"/><w:gridCol w:w="4956"/><w:gridCol w:w="4957"/></w:tblGrid>'
           
           // Header row
           tablaXML += `<w:tr><w:trPr><w:trHeight w:val="340"/></w:trPr><w:tc><w:tcPr><w:tcW w:w="4956" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="C1F0C7"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="8" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="center"/></w:tcPr><w:p><w:pPr><w:jc w:val="center"/><w:rPr><w:b/></w:rPr></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t>ENFOQUES TRANSVERSALES</w:t></w:r></w:p></w:tc><w:tc><w:tcPr><w:tcW w:w="4956" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="C1F0C7"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="4" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="center"/></w:tcPr><w:p><w:pPr><w:jc w:val="center"/><w:rPr><w:b/></w:rPr></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t>VALORES</w:t></w:r></w:p></w:tc><w:tc><w:tcPr><w:tcW w:w="4957" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="C1F0C7"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="4" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="center"/></w:tcPr><w:p><w:pPr><w:jc w:val="center"/><w:rPr><w:b/></w:rPr></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t>ACTITUDES</w:t></w:r></w:p></w:tc></w:tr>`
@@ -1322,11 +1391,11 @@ export async function POST(request: NextRequest) {
           
           if (competenciasTransversalesArray.length === 0) {
             // Tabla vacía con header de 3 columnas
-            return `<w:tbl><w:tblPr><w:tblStyle w:val="TableGrid"/><w:tblW w:w="14869" w:type="dxa"/><w:tblBorders><w:top w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:left w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:right w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:insideH w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:insideV w:val="double" w:sz="4" w:space="0" w:color="00B050"/></w:tblBorders><w:tblLayout w:type="fixed"/></w:tblPr><w:tblGrid><w:gridCol w:w="4956"/><w:gridCol w:w="4956"/><w:gridCol w:w="4957"/></w:tblGrid><w:tr><w:trPr><w:trHeight w:val="340"/></w:trPr><w:tc><w:tcPr><w:tcW w:w="4956" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="C1F0C7"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="8" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="center"/></w:tcPr><w:p><w:pPr><w:jc w:val="center"/><w:rPr><w:b/></w:rPr></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t>COMPETENCIAS TRANSVERSALES</w:t></w:r></w:p></w:tc><w:tc><w:tcPr><w:tcW w:w="4956" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="C1F0C7"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="4" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="center"/></w:tcPr><w:p><w:pPr><w:jc w:val="center"/><w:rPr><w:b/></w:rPr></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t>CAPACIDADES</w:t></w:r></w:p></w:tc><w:tc><w:tcPr><w:tcW w:w="4957" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="C1F0C7"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="4" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="center"/></w:tcPr><w:p><w:pPr><w:jc w:val="center"/><w:rPr><w:b/></w:rPr></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t>${desempeniosHeaderEscapado}</w:t></w:r></w:p></w:tc></w:tr></w:tbl>`
+            return `<w:tbl><w:tblPr><w:tblStyle w:val="TableGrid"/><w:tblW w:w="14869" w:type="dxa"/><w:jc w:val="center"/><w:tblBorders><w:top w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:left w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:right w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:insideH w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:insideV w:val="double" w:sz="4" w:space="0" w:color="00B050"/></w:tblBorders><w:tblLayout w:type="fixed"/></w:tblPr><w:tblGrid><w:gridCol w:w="4956"/><w:gridCol w:w="4956"/><w:gridCol w:w="4957"/></w:tblGrid><w:tr><w:trPr><w:trHeight w:val="340"/></w:trPr><w:tc><w:tcPr><w:tcW w:w="4956" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="C1F0C7"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="8" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="center"/></w:tcPr><w:p><w:pPr><w:jc w:val="center"/><w:rPr><w:b/></w:rPr></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t>COMPETENCIAS TRANSVERSALES</w:t></w:r></w:p></w:tc><w:tc><w:tcPr><w:tcW w:w="4956" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="C1F0C7"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="4" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="center"/></w:tcPr><w:p><w:pPr><w:jc w:val="center"/><w:rPr><w:b/></w:rPr></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t>CAPACIDADES</w:t></w:r></w:p></w:tc><w:tc><w:tcPr><w:tcW w:w="4957" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="C1F0C7"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="4" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="center"/></w:tcPr><w:p><w:pPr><w:jc w:val="center"/><w:rPr><w:b/></w:rPr></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t>${desempeniosHeaderEscapado}</w:t></w:r></w:p></w:tc></w:tr></w:tbl>`
           }
           
           // Construir la tabla con 3 columnas
-          let tablaXML = '<w:tbl><w:tblPr><w:tblStyle w:val="TableGrid"/><w:tblW w:w="14869" w:type="dxa"/><w:tblBorders><w:top w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:left w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:right w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:insideH w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:insideV w:val="double" w:sz="4" w:space="0" w:color="00B050"/></w:tblBorders><w:tblLayout w:type="fixed"/></w:tblPr><w:tblGrid><w:gridCol w:w="4956"/><w:gridCol w:w="4956"/><w:gridCol w:w="4957"/></w:tblGrid>'
+          let tablaXML = '<w:tbl><w:tblPr><w:tblStyle w:val="TableGrid"/><w:tblW w:w="14869" w:type="dxa"/><w:jc w:val="center"/><w:tblBorders><w:top w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:left w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:right w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:insideH w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:insideV w:val="double" w:sz="4" w:space="0" w:color="00B050"/></w:tblBorders><w:tblLayout w:type="fixed"/></w:tblPr><w:tblGrid><w:gridCol w:w="4956"/><w:gridCol w:w="4956"/><w:gridCol w:w="4957"/></w:tblGrid>'
           
           // Header row
           tablaXML += `<w:tr><w:trPr><w:trHeight w:val="340"/></w:trPr><w:tc><w:tcPr><w:tcW w:w="4956" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="C1F0C7"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="8" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="center"/></w:tcPr><w:p><w:pPr><w:jc w:val="center"/><w:rPr><w:b/></w:rPr></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t>COMPETENCIAS TRANSVERSALES</w:t></w:r></w:p></w:tc><w:tc><w:tcPr><w:tcW w:w="4956" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="C1F0C7"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="4" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="center"/></w:tcPr><w:p><w:pPr><w:jc w:val="center"/><w:rPr><w:b/></w:rPr></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t>CAPACIDADES</w:t></w:r></w:p></w:tc><w:tc><w:tcPr><w:tcW w:w="4957" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="C1F0C7"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="4" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="center"/></w:tcPr><w:p><w:pPr><w:jc w:val="center"/><w:rPr><w:b/></w:rPr></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t>${desempeniosHeaderEscapado}</w:t></w:r></w:p></w:tc></w:tr>`
@@ -1786,7 +1855,7 @@ export async function POST(request: NextRequest) {
                 const columnasEsperadas = 8
                 const anchoColumna = Math.floor(14869 / columnasEsperadas) // Ancho total de página / número de columnas
                 
-                let tablaXML = `<w:tbl><w:tblPr><w:tblStyle w:val="TableGrid"/><w:tblW w:w="14869" w:type="dxa"/><w:tblBorders><w:top w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:left w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:right w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:insideH w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:insideV w:val="double" w:sz="4" w:space="0" w:color="00B050"/></w:tblBorders><w:tblLayout w:type="fixed"/></w:tblPr><w:tblGrid>`
+                let tablaXML = `<w:tbl><w:tblPr><w:tblStyle w:val="TableGrid"/><w:tblW w:w="14869" w:type="dxa"/><w:jc w:val="center"/><w:tblBorders><w:top w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:left w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:right w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:insideH w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:insideV w:val="double" w:sz="4" w:space="0" w:color="00B050"/></w:tblBorders><w:tblLayout w:type="fixed"/></w:tblPr><w:tblGrid>`
                 
                 // Agregar 8 columnas al grid
                 for (let i = 0; i < columnasEsperadas; i++) {
@@ -1839,11 +1908,12 @@ export async function POST(request: NextRequest) {
                 
                 tablaXML += `</w:tr>`
                 
-                // FILAS DE DATOS: Agregar filas de datos (eliminando primera y última columna, y también la segunda fila de la tabla original)
+                // FILAS DE DATOS: Agregar filas de datos (eliminando primera y última columna, y también las primeras dos filas de la tabla original)
                 filas.forEach((fila, indiceFila) => {
-                  // Eliminar la segunda fila (índice 1) de la tabla original (ya la reemplazamos con sub-headers)
-                  if (indiceFila === 1) {
-                    return // Saltar la segunda fila
+                  // Eliminar la primera fila (índice 0) que contiene los encabezados originales
+                  // y la segunda fila (índice 1) de la tabla original (ya las reemplazamos con nuestros headers)
+                  if (indiceFila === 0 || indiceFila === 1) {
+                    return // Saltar la primera y segunda fila
                   }
                   
                   // Eliminar primera columna (índice 0) y última columna (slice(1, -1))
@@ -1857,25 +1927,41 @@ export async function POST(request: NextRequest) {
                   
                   tablaXML += `<w:tr><w:trPr><w:trHeight w:val="400" w:rule="atLeast"/></w:trPr>`
                   
-                  filaAjustada.forEach((celda) => {
+                  // Calcular el número de sesión (empezando desde 1, ya que saltamos las filas 0 y 1)
+                  const numeroSesion = indiceFila - 1
+                  
+                  filaAjustada.forEach((celda, indiceColumna) => {
                     // Limpiar <br> del texto de la celda, pero preservar TODO el contenido
                     let celdaLimpia = (celda || ' ').replace(/<br\s*\/?>/gi, '\n').replace(/<BR\s*\/?>/gi, '\n')
                     
-                    // Si la celda tiene múltiples líneas (por <br> convertidos), crear múltiples párrafos
-                    const lineasCelda = celdaLimpia.split('\n').filter((l: string) => l.trim() || l === '')
-                    
                     tablaXML += `<w:tc><w:tcPr><w:tcW w:w="${anchoColumna}" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="FFFFFF"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="4" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="top"/></w:tcPr>`
                     
-                    if (lineasCelda.length > 1) {
-                      // Múltiples líneas - crear múltiples párrafos
-                      lineasCelda.forEach((linea, idx) => {
-                        const lineaEscapada = escaparXML(linea || ' ')
-                        tablaXML += `<w:p><w:pPr><w:spacing w:after="${idx < lineasCelda.length - 1 ? 50 : 100}" w:before="${idx === 0 ? 100 : 50}"/></w:pPr><w:r><w:rPr><w:sz w:val="16"/><w:color w:val="000000"/></w:rPr><w:t>${lineaEscapada}</w:t></w:r></w:p>`
-                      })
+                    // Si es la primera columna (TÍTULOS), agregar "Sesión X:" en una línea y el título en la siguiente
+                    if (indiceColumna === 0) {
+                      const sesionEscapada = escaparXML(`Sesión ${numeroSesion}:`)
+                      const tituloEscapado = escaparXML(celdaLimpia.trim())
+                      
+                      // Primera línea: "Sesión X:"
+                      tablaXML += `<w:p><w:pPr><w:spacing w:after="50" w:before="100"/></w:pPr><w:r><w:rPr><w:sz w:val="16"/><w:color w:val="000000"/></w:rPr><w:t>${sesionEscapada}</w:t></w:r></w:p>`
+                      
+                      // Segunda línea: el título
+                      tablaXML += `<w:p><w:pPr><w:spacing w:after="100" w:before="0"/></w:pPr><w:r><w:rPr><w:sz w:val="16"/><w:color w:val="000000"/></w:rPr><w:t>${tituloEscapado}</w:t></w:r></w:p>`
                     } else {
-                      // Una sola línea
-                      const celdaEscapada = escaparXML(celdaLimpia || ' ')
-                      tablaXML += `<w:p><w:pPr><w:spacing w:after="100" w:before="100"/></w:pPr><w:r><w:rPr><w:sz w:val="16"/><w:color w:val="000000"/></w:rPr><w:t>${celdaEscapada}</w:t></w:r></w:p>`
+                      // Para las demás columnas, procesar normalmente
+                      // Si la celda tiene múltiples líneas (por <br> convertidos), crear múltiples párrafos
+                      const lineasCelda = celdaLimpia.split('\n').filter((l: string) => l.trim() || l === '')
+                      
+                      if (lineasCelda.length > 1) {
+                        // Múltiples líneas - crear múltiples párrafos
+                        lineasCelda.forEach((linea, idx) => {
+                          const lineaEscapada = escaparXML(linea || ' ')
+                          tablaXML += `<w:p><w:pPr><w:spacing w:after="${idx < lineasCelda.length - 1 ? 50 : 100}" w:before="${idx === 0 ? 100 : 50}"/></w:pPr><w:r><w:rPr><w:sz w:val="16"/><w:color w:val="000000"/></w:rPr><w:t>${lineaEscapada}</w:t></w:r></w:p>`
+                        })
+                      } else {
+                        // Una sola línea
+                        const celdaEscapada = escaparXML(celdaLimpia || ' ')
+                        tablaXML += `<w:p><w:pPr><w:spacing w:after="100" w:before="100"/></w:pPr><w:r><w:rPr><w:sz w:val="16"/><w:color w:val="000000"/></w:rPr><w:t>${celdaEscapada}</w:t></w:r></w:p>`
+                      }
                     }
                     
                     tablaXML += `</w:tc>`
