@@ -4,7 +4,6 @@ import PizZip from 'pizzip'
 import fs from 'fs'
 import path from 'path'
 import { prisma } from '@/lib/prisma'
-import { generateCampoTematico } from '@/lib/generate-campo-tematico'
 import { generateSituacionSignificativa } from '@/lib/generate-situacion-significativa'
 import { getUserId } from '@/lib/auth'
 
@@ -160,7 +159,7 @@ export async function POST(request: NextRequest) {
       let situacionSignificativa = ''
       let tituloUnidad = unidad.tituloUnidad || ''
       let problemaPotencialidad = unidad.problemaPotencialidad || ''
-      let campoTematico = '' // Inicializar campo temático
+      let campoTematico = '' // Campo temático ya no se usa, mantener vacío
       
       // Si tieneTituloIA es false, usar el título ingresado manualmente
       if (!unidad.tieneTituloIA && unidad.tituloUnidad) {
@@ -188,7 +187,7 @@ export async function POST(request: NextRequest) {
         situacionSignificativa = datosExistentesUnidad.situacionSignificativa || ''
         tituloUnidad = datosExistentesUnidad.tituloUnidad || unidad.tituloUnidad || ''
         problemaPotencialidad = unidad.problemaPotencialidad || ''
-        campoTematico = datosExistentesUnidad.campoTematico || '' // Usar campo temático existente
+        campoTematico = '' // Campo temático ya no se usa
         console.log(`✅ [DEBUG] Datos existentes cargados para unidad ${i}:`, {
           tieneSituacion: !!situacionSignificativa,
           longitudSituacion: situacionSignificativa.length,
@@ -318,121 +317,10 @@ export async function POST(request: NextRequest) {
         console.warn(`⚠️ [DEBUG] No hay IDs de competencias para unidad ${i}`)
       }
       
-      // Obtener desempeños desde la BD y generar campo temático (solo si no tenemos datos existentes)
-      // Si ya tenemos datos existentes (situación significativa y campo temático), saltar todo el procesamiento
-      if (datosExistentesUnidad && !debeGenerar) {
-        // Ya se asignaron los datos existentes arriba (situacionSignificativa y campoTematico)
-        // Saltar completamente el procesamiento de desempeños y campo temático
-        console.log(`⏭️ [DEBUG] Unidad ${i}: Datos existentes ya cargados, saltando procesamiento de desempeños y campo temático`)
-        console.log(`   - situacionSignificativa: "${situacionSignificativa?.substring(0, 50) || '(vacío)'}" (longitud: ${situacionSignificativa?.length || 0})`)
-        console.log(`   - campoTematico: "${campoTematico?.substring(0, 50) || '(vacío)'}" (longitud: ${campoTematico?.length || 0})`)
-      } else {
-      console.log(`🔍 [DEBUG] ===== VERIFICANDO DESEMPEÑOS PARA UNIDAD ${i} =====`)
-      console.log(`   - tieneDesempenios: ${!!unidad.desempeniosSeleccionados}`)
-      console.log(`   - esArray: ${Array.isArray(unidad.desempeniosSeleccionados)}`)
-      console.log(`   - cantidad: ${unidad.desempeniosSeleccionados?.length || 0}`)
-      console.log(`   - valores (IDs): ${JSON.stringify(unidad.desempeniosSeleccionados)}`)
-      
-      if (unidad.desempeniosSeleccionados && Array.isArray(unidad.desempeniosSeleccionados) && unidad.desempeniosSeleccionados.length > 0) {
-        try {
-          // Obtener los textos de los desempeños
-          const desempeniosIds = unidad.desempeniosSeleccionados
-            .map((id: string | number) => parseInt(String(id)))
-            .filter((id: number) => !isNaN(id))
-          
-          console.log(`🔢 [DEBUG] IDs de desempeños convertidos para unidad ${i}:`, desempeniosIds)
-          
-          if (desempeniosIds.length > 0) {
-            const desempenios = await prisma.desempenio.findMany({
-              where: { id: { in: desempeniosIds } },
-              select: { descripcion: true, id: true }
-            })
-            
-            console.log(`📋 [DEBUG] Desempeños encontrados en BD para unidad ${i}:`, {
-              solicitados: desempeniosIds.length,
-              encontrados: desempenios.length,
-              idsEncontrados: desempenios.map(d => d.id),
-              idsSolicitados: desempeniosIds
-            })
-            
-            const desempeniosTextos = desempenios.map(d => d.descripcion)
-            console.log(`📝 [DEBUG] Textos de desempeños para unidad ${i}:`)
-            desempeniosTextos.forEach((t, idx) => {
-              console.log(`   ${idx + 1}. "${t.substring(0, 80)}${t.length > 80 ? '...' : ''}"`)
-            })
-            
-            // Generar campo temático usando la función helper
-            // Solo generar si no tenemos datos existentes o si debemos regenerar
-            // Si ya tenemos campoTematico de datos existentes, no hacer nada más
-            if (campoTematico && !debeGenerar) {
-              console.log(`✅ [DEBUG] Campo temático ya cargado desde datos existentes para unidad ${i}`)
-            } else if (desempeniosTextos.length > 0) {
-              // Si tenemos datos existentes y NO debemos regenerar, usar los datos existentes (NO generar con IA)
-              if (datosExistentesUnidad?.campoTematico && !debeGenerar) {
-                // Usar campo temático existente (NO generar con IA)
-                console.log(`📦 [DEBUG] ===== USANDO CAMPO TEMÁTICO EXISTENTE PARA UNIDAD ${i} (SIN GENERAR CON IA) =====`)
-                campoTematico = datosExistentesUnidad.campoTematico
-                console.log(`✅ [DEBUG] Campo temático existente cargado para unidad ${i}:`, {
-                  longitud: campoTematico.length,
-                  primeros100: campoTematico.substring(0, 100)
-                })
-              } else if (debeGenerar) {
-                // Generar con IA
-              console.log(`🤖 [DEBUG] ===== LLAMANDO A generateCampoTematico PARA UNIDAD ${i} =====`)
-              console.log(`   - Proveedor IA: ${aiProvider}`)
-              console.log(`   - Modelo: ${openaiModel}`)
-              console.log(`   - Cantidad de desempeños: ${desempeniosTextos.length}`)
-              console.log(`   - Desempeños que se enviarán al prompt:`)
-              desempeniosTextos.forEach((d, idx) => {
-                console.log(`     ${idx + 1}. ${d.substring(0, 100)}${d.length > 100 ? '...' : ''}`)
-              })
-              
-              try {
-                console.log(`⏳ [DEBUG] Esperando respuesta de generateCampoTematico para unidad ${i}...`)
-                const campoResult = await generateCampoTematico(desempeniosTextos, aiProvider, openaiModel)
-                console.log(`📦 [DEBUG] ===== RESULTADO DE generateCampoTematico PARA UNIDAD ${i} =====`)
-                console.log(`   - tieneCampoTematico: ${!!campoResult.campoTematico}`)
-                console.log(`   - longitudCampoTematico: ${campoResult.campoTematico?.length || 0}`)
-                console.log(`   - campoTematico generado: "${campoResult.campoTematico ? campoResult.campoTematico.substring(0, 150) + (campoResult.campoTematico.length > 150 ? '...' : '') : '(vacío)'}"`)
-                console.log(`   - tieneRespuestaCompleta: ${!!campoResult.respuestaCompleta}`)
-                console.log(`   - longitudRespuestaCompleta: ${campoResult.respuestaCompleta?.length || 0}`)
-                
-                campoTematico = campoResult.campoTematico || ''
-                
-                if (campoTematico) {
-                  console.log(`✅ [DEBUG] Campo temático generado exitosamente para unidad ${i}`)
-                  console.log(`   - Contenido completo: "${campoTematico}"`)
-                } else {
-                  console.warn(`⚠️ [DEBUG] Campo temático está vacío para unidad ${i} después de generar`)
-                }
-              } catch (error: any) {
-                console.error(`❌ [DEBUG] Error al generar campo temático para unidad ${i}:`, {
-                  error: error.message,
-                  stack: error.stack,
-                  nombre: error.name
-                })
-                campoTematico = '' // Asegurar que esté vacío si hay error
-                }
-              } else {
-                console.log(`⏭️ [DEBUG] Unidad ${i}: No se generará campo temático (no está en unidadesParaGenerar)`)
-              }
-            } else {
-              console.warn(`⚠️ [DEBUG] No hay textos de desempeños para generar campo temático en unidad ${i}`)
-            }
-          } else {
-            console.warn(`⚠️ [DEBUG] No se pudieron convertir los IDs de desempeños a números para unidad ${i}`)
-          }
-        } catch (error: any) {
-          console.error(`❌ [DEBUG] Error al procesar desempeños para unidad ${i}:`, {
-            error: error.message,
-            stack: error.stack,
-            nombre: error.name
-          })
-        }
-      } else {
-        console.warn(`⚠️ [DEBUG] No hay desempeños seleccionados para unidad ${i}`)
-        }
-      }
+      // Campo temático ya no se genera - mantener vacío
+      // Los desempeños ya no se usan para generar campo temático
+      campoTematico = ''
+      console.log(`⏭️ [DEBUG] Unidad ${i}: Campo temático deshabilitado (ya no se usa en la plantilla)`)
       
       // Asignar datos a las variables de la plantilla
       // Asegurarse de que los valores sean strings y no undefined/null

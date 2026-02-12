@@ -1769,9 +1769,10 @@ function ProgramacionAnualContent() {
 
                     {/* Selección de Competencias y Desempeños */}
                     <div className={styles.formGroup} style={{ borderTop: '2px solid #e0e0e0', paddingTop: '20px', marginTop: '20px' }}>
-                      <h4 style={{ marginBottom: '15px', color: '#0066cc', fontSize: '16px' }}>Competencias y Desempeños</h4>
+                      {/* <h4 style={{ marginBottom: '15px', color: '#0066cc', fontSize: '16px' }}>Competencias y Desempeños</h4> */}
                       
-                      <button
+                      {/* Botón oculto - ya no se muestra */}
+                      {/* <button
                         type="button"
                         onClick={() => abrirModalCompetencias(index)}
                         className={styles.button}
@@ -1781,10 +1782,10 @@ function ProgramacionAnualContent() {
                         {unidad.competenciaSeleccionada || unidad.desempeniosSeleccionados.length > 0 
                           ? '✏️ Editar Competencias y Desempeños' 
                           : '➕ Seleccionar Competencias y Desempeños'}
-                      </button>
+                      </button> */}
                       
-                      {/* Mostrar competencias seleccionadas */}
-                      {(unidad.competenciasSeleccionadas?.length > 0 || unidad.competenciaSeleccionada) && (
+                      {/* Mostrar competencias seleccionadas - OCULTO */}
+                      {false && (unidad.competenciasSeleccionadas?.length > 0 || unidad.competenciaSeleccionada) && (
                         <div style={{ marginBottom: '15px', padding: '12px', backgroundColor: '#f0f9ff', borderRadius: '6px', border: '1px solid #bfdbfe' }}>
                           <strong style={{ color: '#1e40af', fontSize: '14px', display: 'block', marginBottom: '8px' }}>
                             Competencia{unidad.competenciasSeleccionadas?.length > 1 ? 's' : ''} seleccionada{unidad.competenciasSeleccionadas?.length > 1 ? 's' : ''}:
@@ -1867,8 +1868,8 @@ function ProgramacionAnualContent() {
                         </div>
                       )}
                       
-                      {/* Mostrar desempeños seleccionados */}
-                      {unidad.desempeniosSeleccionados.length > 0 && (
+                      {/* Mostrar desempeños seleccionados - OCULTO */}
+                      {false && unidad.desempeniosSeleccionados.length > 0 && (
                         <div style={{ padding: '12px', backgroundColor: '#f0fdf4', borderRadius: '6px', border: '1px solid #86efac' }}>
                           <strong style={{ color: '#166534', fontSize: '14px', display: 'block', marginBottom: '8px' }}>
                             Desempeños seleccionados ({unidad.desempeniosSeleccionados.length}/4):
@@ -1918,7 +1919,8 @@ function ProgramacionAnualContent() {
                         </div>
                       )}
                       
-                      {(!unidad.competenciasSeleccionadas?.length && !unidad.competenciaSeleccionada) && unidad.desempeniosSeleccionados.length === 0 && (
+                      {/* Mensaje oculto - ya no se muestra */}
+                      {false && (!unidad.competenciasSeleccionadas?.length && !unidad.competenciaSeleccionada) && unidad.desempeniosSeleccionados.length === 0 && (
                         <p className={styles.helpText} style={{ color: '#666', fontStyle: 'italic', textAlign: 'center', padding: '20px' }}>
                           Haz clic en el botón arriba para seleccionar competencias y desempeños
                         </p>
