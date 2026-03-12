@@ -123,7 +123,7 @@ export async function POST(request: NextRequest) {
       .replace(/\s+/g, '_')
       .replace(/[^a-zA-Z0-9_.-]/g, '')
 
-    return new NextResponse(buffer as Buffer, {
+    return new NextResponse(Uint8Array.from(buffer as Buffer), {
       status: 200,
       headers: {
         'Content-Type': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',

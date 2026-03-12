@@ -3,6 +3,7 @@ import Docxtemplater from 'docxtemplater'
 import PizZip from 'pizzip'
 import fs from 'fs'
 import path from 'path'
+import { Prisma } from '../../../../generated/prisma/client'
 import { prisma } from '@/lib/prisma'
 import { getUserId } from '@/lib/auth'
 import mammoth from 'mammoth'
@@ -2683,12 +2684,12 @@ export async function POST(request: NextRequest) {
             producto: formData.producto || null,
             tituloUnidad: tituloUnidad || null,
             propositoUnidad: formData.propositoUnidad || null,
-            competencias: competenciasYEstándares,
+            competencias: competenciasYEstándares == null ? Prisma.JsonNull : competenciasYEstándares,
             campoTematico: formData.campoTematico || null,
             numeroSesiones: formData.numeroSesiones || null,
             instrumentoEvaluacion: formData.instrumentoEvaluacion || null,
             ...(sesionesParaGuardar !== null && { sesiones: sesionesParaGuardar }),
-            enfoquesTransversales: enfoquesParaGuardar,
+            enfoquesTransversales: enfoquesParaGuardar == null ? Prisma.JsonNull : enfoquesParaGuardar,
             variablesTemplate: {
               aiProvider: formData.aiProvider || 'openai',
               openaiModel: formData.openaiModel || 'gpt-5-mini'

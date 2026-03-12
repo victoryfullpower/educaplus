@@ -516,7 +516,7 @@ export default function UnidadesAprendizajePage() {
     // Verificar si hay datos guardados antes de mostrar el modal
     try {
       if (formData.unidad && formData.areaId && formData.gradoId) {
-        const anio = formData.anio || new Date().getFullYear()
+        const anio = new Date().getFullYear()
         const url = `/api/unidad-aprendizaje?anio=${anio}&areaId=${formData.areaId}&gradoId=${formData.gradoId}&unidad=${formData.unidad}`
         console.log('🔵 [MODAL] Consultando:', url)
         
