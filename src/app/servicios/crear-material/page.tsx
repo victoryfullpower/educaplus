@@ -59,8 +59,13 @@ export default function CrearMaterialPage() {
             </Link>
 
             <Link href="/servicios/crear-material/sesiones-fichas" className={styles.optionCard}>
-              <h2>CREAR SESIONES, FICHAS Y RÚBRICAS</h2>
+              <h2>CREAR SESIONES</h2>
               <p>Genera sesiones completas con fichas y rúbricas</p>
+            </Link>
+
+            <Link href="/servicios/crear-material/ficha-aprendizaje" className={styles.optionCard}>
+              <h2>CREAR FICHA DE APRENDIZAJE</h2>
+              <p>Genera la ficha de una sesión desde tu programación anual</p>
             </Link>
 
             <Link href="/servicios/crear-material/conclusiones" className={styles.optionCard}>

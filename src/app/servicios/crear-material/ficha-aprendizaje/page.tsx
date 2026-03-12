@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import Header from '@/components/Header'
-import styles from './rubricas-solo.module.css'
+import styles from './ficha-aprendizaje.module.css'
 
 type PlanAnual = {
   id: number
@@ -40,7 +40,7 @@ type UnidadAprendizaje = {
   listaSesiones?: SesionRow[]
 }
 
-export default function RubricasSoloPage() {
+export default function FichaAprendizajePage() {
   const anio = new Date().getFullYear()
   const [planes, setPlanes] = useState<PlanAnual[]>([])
   const [unidades, setUnidades] = useState<UnidadAprendizaje[]>([])
@@ -53,12 +53,22 @@ export default function RubricasSoloPage() {
   const [loadingPlanes, setLoadingPlanes] = useState(true)
   const [loadingUnidades, setLoadingUnidades] = useState(false)
   const [loadingUnidad, setLoadingUnidad] = useState(false)
+  const [loading, setLoading] = useState(false)
   const [loadingPrompt, setLoadingPrompt] = useState(false)
   const [loadingRespuestaPrompt, setLoadingRespuestaPrompt] = useState(false)
-  const [loadingDocument, setLoadingDocument] = useState(false)
   const [showModalGeneracion, setShowModalGeneracion] = useState(false)
+  const [contenidoGuardado, setContenidoGuardado] = useState<{
+    motivacion: string
+    saberes: string
+    problematizacion: string
+    proposito: string
+    desarrollo: string
+    desarrolloantes: string
+    desarrollodurante: string
+    desarrollodespues: string
+  } | null>(null)
 
-  // Cargar programaciones anuales (mismo servicio que ficha)
+  // Cargar programaciones anuales
   useEffect(() => {
     const load = async () => {
       setLoadingPlanes(true)
@@ -77,7 +87,7 @@ export default function RubricasSoloPage() {
     load()
   }, [anio])
 
-  // Al elegir plan, cargar unidades (mismo servicio que ficha)
+  // Al elegir plan, cargar unidades de aprendizaje
   useEffect(() => {
     if (!planId) {
       setUnidades([])
@@ -105,7 +115,7 @@ export default function RubricasSoloPage() {
     load()
   }, [planId, anio])
 
-  // Al elegir unidad, cargar sesiones (mismo servicio que ficha)
+  // Al elegir unidad, cargar sesiones (unidad con listaSesiones)
   useEffect(() => {
     if (!unidadId) {
       setUnidadConSesiones(null)
@@ -135,11 +145,124 @@ export default function RubricasSoloPage() {
   )
   const puedeGenerar = Boolean(sesionNumero && sesionSeleccionada && unidadConSesiones)
 
+  const generarDocumento = async (usarContenidoBD: boolean) => {
+    if (!unidadConSesiones || !sesionSeleccionada) return
+    setShowModalGeneracion(false)
+    setLoading(true)
+    try {
+      const competencias = Array.isArray(sesionSeleccionada.competenciasSeleccionadas)
+        ? sesionSeleccionada.competenciasSeleccionadas
+        : []
+      const capacidades = Array.isArray(sesionSeleccionada.capacidadesSeleccionadas)
+        ? sesionSeleccionada.capacidadesSeleccionadas
+        : []
+      const desempenios = Array.isArray(sesionSeleccionada.desempeniosSeleccionados)
+        ? sesionSeleccionada.desempeniosSeleccionados
+        : []
+
+      const body: Record<string, unknown> = {
+        formData: {
+          institucion: unidadConSesiones.institucion ?? '',
+          area: unidadConSesiones.area ?? '',
+          grado: unidadConSesiones.grado ?? '',
+          gradoId: unidadConSesiones.gradoId ?? '',
+          areaId: unidadConSesiones.areaId ?? '',
+          unidad: unidadConSesiones.unidad ?? '',
+          ciclo: unidadConSesiones.ciclo ?? '',
+          director: unidadConSesiones.director ?? '',
+          docente: unidadConSesiones.docente ?? '',
+          fecha: '',
+          duracion: unidadConSesiones.duracion ?? '',
+          tituloSesion: sesionSeleccionada.titulo ?? '',
+          continuarUnidad: true
+        },
+        sesionData: {
+          numeroSesion: String(sesionSeleccionada.numeroSesion),
+          titulo: sesionSeleccionada.titulo ?? '',
+          competenciasSeleccionadas: competencias,
+          capacidadesSeleccionadas: capacidades,
+          desempeniosSeleccionados: desempenios,
+          campoTematico: sesionSeleccionada.campoTematico ?? '',
+          evidencias: sesionSeleccionada.evidencias ?? '',
+          criterios: sesionSeleccionada.criterios ?? ''
+        },
+        unidadData: {
+          areaId: unidadConSesiones.areaId ?? '',
+          gradoId: unidadConSesiones.gradoId ?? '',
+          unidad: unidadConSesiones.unidad ?? ''
+        }
+      }
+      if (usarContenidoBD && contenidoGuardado) {
+        body.contenidoDesdeBD = contenidoGuardado
+      }
+
+      const response = await fetch('/api/sesiones-fichas/generate-document-ficha', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sesionId: sesionSeleccionada.id })
+      })
+      if (!response.ok) {
+        const err = await response.json()
+        throw new Error(err.error || 'Error al generar el documento')
+      }
+      const fromSaved = response.headers.get('X-Ficha-From') === 'saved'
+      const blob = await response.blob()
+      const url = window.URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `Ficha_Aprendizaje_${unidadConSesiones.area ?? 'documento'}_${Date.now()}.docx`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      window.URL.revokeObjectURL(url)
+      if (fromSaved) {
+        console.info('Documento generado desde datos guardados (sin consultar IA).')
+      }
+    } catch (e) {
+      console.error(e)
+      alert(e instanceof Error ? e.message : 'Error al generar el documento.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const getFormDataAndSesionData = () => {
+    if (!unidadConSesiones || !sesionSeleccionada) return null
+    const competencias = Array.isArray(sesionSeleccionada.competenciasSeleccionadas)
+      ? sesionSeleccionada.competenciasSeleccionadas
+      : []
+    const capacidades = Array.isArray(sesionSeleccionada.capacidadesSeleccionadas)
+      ? sesionSeleccionada.capacidadesSeleccionadas
+      : []
+    const desempenios = Array.isArray(sesionSeleccionada.desempeniosSeleccionados)
+      ? sesionSeleccionada.desempeniosSeleccionados
+      : []
+    return {
+      formData: {
+        area: unidadConSesiones.area ?? '',
+        grado: unidadConSesiones.grado ?? '',
+        ciclo: unidadConSesiones.ciclo ?? '',
+        duracion: unidadConSesiones.duracion ?? '',
+        tituloSesion: sesionSeleccionada.titulo ?? '',
+        areaId: unidadConSesiones.areaId ?? '',
+        gradoId: unidadConSesiones.gradoId ?? '',
+        unidad: unidadConSesiones.unidad ?? ''
+      },
+      sesionData: {
+        numeroSesion: String(sesionSeleccionada.numeroSesion),
+        titulo: sesionSeleccionada.titulo ?? '',
+        competenciasSeleccionadas: competencias,
+        capacidadesSeleccionadas: capacidades,
+        desempeniosSeleccionados: desempenios
+      }
+    }
+  }
+
   const handlePromptDinamico = async () => {
     if (!sesionSeleccionada) return
     setLoadingPrompt(true)
     try {
-      const response = await fetch('/api/sesiones-fichas/generate-prompt-rubrica', {
+      const response = await fetch('/api/sesiones-fichas/generate-prompt-ficha', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sesionId: sesionSeleccionada.id })
@@ -152,7 +275,7 @@ export default function RubricasSoloPage() {
       const url = window.URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
-      a.download = `Prompt_Rubrica_${unidadConSesiones?.area ?? 'documento'}_${Date.now()}.docx`
+      a.download = `Prompt_Ficha_${unidadConSesiones?.area ?? 'documento'}_${Date.now()}.docx`
       document.body.appendChild(a)
       a.click()
       document.body.removeChild(a)
@@ -169,24 +292,54 @@ export default function RubricasSoloPage() {
     if (!sesionSeleccionada) return
     setLoadingRespuestaPrompt(true)
     try {
-      const response = await fetch('/api/sesiones-fichas/respuesta-prompt-rubrica', {
+      const response = await fetch('/api/sesiones-fichas/respuesta-prompt-ficha', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sesionId: sesionSeleccionada.id })
+        body: JSON.stringify({ sesionId: sesionSeleccionada.id, includePreviewImage: true })
       })
       if (!response.ok) {
         const err = await response.json()
         throw new Error(err.error || 'Error al generar la respuesta del prompt')
       }
-      const blob = await response.blob()
-      const url = window.URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `Respuesta_Prompt_Rubrica_${unidadConSesiones?.area ?? 'documento'}_${Date.now()}.docx`
-      document.body.appendChild(a)
-      a.click()
-      document.body.removeChild(a)
-      window.URL.revokeObjectURL(url)
+      const contentType = response.headers.get('Content-Type') || ''
+      if (contentType.includes('application/json')) {
+        const data = await response.json()
+        const ts = Date.now()
+        const baseName = `Respuesta_Prompt_Ficha_${(unidadConSesiones?.area ?? 'documento').replace(/\s+/g, '_')}_${ts}`.replace(/[^a-zA-Z0-9_.-]/g, '')
+        const docxName = data.fileNameDocx || `${baseName}.docx`
+        const imageName = data.fileNameImage || `${baseName}_vista_previa.svg`
+        const docxBuf = Uint8Array.from(atob(data.docxBase64), (c) => c.charCodeAt(0))
+        const imageBuf = Uint8Array.from(atob(data.imageBase64), (c) => c.charCodeAt(0))
+        const mimeImage = data.mimeImage || 'image/svg+xml'
+        const blobDocx = new Blob([docxBuf], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' })
+        const blobImage = new Blob([imageBuf], { type: mimeImage })
+        const urlDocx = window.URL.createObjectURL(blobDocx)
+        const urlImage = window.URL.createObjectURL(blobImage)
+        const a1 = document.createElement('a')
+        a1.href = urlDocx
+        a1.download = docxName
+        document.body.appendChild(a1)
+        a1.click()
+        document.body.removeChild(a1)
+        window.URL.revokeObjectURL(urlDocx)
+        const a2 = document.createElement('a')
+        a2.href = urlImage
+        a2.download = imageName
+        document.body.appendChild(a2)
+        a2.click()
+        document.body.removeChild(a2)
+        window.URL.revokeObjectURL(urlImage)
+      } else {
+        const blob = await response.blob()
+        const url = window.URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = `Respuesta_Prompt_Ficha_${unidadConSesiones?.area ?? 'documento'}_${Date.now()}.docx`
+        document.body.appendChild(a)
+        a.click()
+        document.body.removeChild(a)
+        window.URL.revokeObjectURL(url)
+      }
     } catch (e) {
       console.error(e)
       alert(e instanceof Error ? e.message : 'Error al generar la respuesta del prompt.')
@@ -195,53 +348,20 @@ export default function RubricasSoloPage() {
     }
   }
 
-  const generarDocumento = async (usarGuardado: boolean) => {
-    if (!sesionSeleccionada || !unidadConSesiones) return
-    setShowModalGeneracion(false)
-    setLoadingDocument(true)
-    try {
-      const response = await fetch('/api/sesiones-fichas/generate-document-rubrica', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          sesionId: sesionSeleccionada.id,
-          forceRegenerate: !usarGuardado
-        })
-      })
-      if (!response.ok) {
-        const err = await response.json()
-        throw new Error(err.error || 'Error al generar el documento')
-      }
-      const fromSaved = response.headers.get('X-Rubrica-From') === 'saved'
-      const blob = await response.blob()
-      const url = window.URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `Rubrica_Analitica_${unidadConSesiones.area ?? 'documento'}_${Date.now()}.docx`
-      document.body.appendChild(a)
-      a.click()
-      document.body.removeChild(a)
-      window.URL.revokeObjectURL(url)
-      if (fromSaved) {
-        console.info('Documento generado desde rúbrica guardada (sin consultar IA).')
-      }
-    } catch (e) {
-      console.error(e)
-      alert(e instanceof Error ? e.message : 'Error al generar el documento.')
-    } finally {
-      setLoadingDocument(false)
-    }
-  }
-
   const handleGenerarDocumento = async () => {
-    if (!sesionSeleccionada) return
+    if (!unidadConSesiones || !sesionSeleccionada) return
     try {
-      const res = await fetch(
-        `/api/sesiones-fichas/rubrica-existe?sesionId=${sesionSeleccionada.id}`
-      )
-      if (res.ok) {
-        const data = await res.json()
-        if (data.existe) {
+      const params = new URLSearchParams({
+        areaId: String(unidadConSesiones.areaId ?? ''),
+        gradoId: String(unidadConSesiones.gradoId ?? ''),
+        unidad: String(unidadConSesiones.unidad ?? ''),
+        numeroSesion: String(sesionSeleccionada.numeroSesion)
+      })
+      const checkRes = await fetch(`/api/sesiones-fichas/sesion-contenido?${params}`)
+      if (checkRes.ok) {
+        const data = await checkRes.json()
+        if (data.existe && data.contenido) {
+          setContenidoGuardado(data.contenido)
           setShowModalGeneracion(true)
           return
         }
@@ -257,15 +377,15 @@ export default function RubricasSoloPage() {
       <Header />
       <main className={styles.main}>
         <div className={styles.container}>
-          <h1 className={styles.title}>CREAR SOLO RÚBRICAS</h1>
+          <h1 className={styles.title}>CREAR FICHA DE APRENDIZAJE</h1>
           <p className={styles.subtitle}>
-            Elige una programación anual, luego la unidad y la sesión para generar las rúbricas.
+            Elige una programación anual, luego la unidad y la sesión para generar la ficha.
           </p>
 
-          <div className={`${styles.form} ${(loadingPrompt || loadingRespuestaPrompt || loadingDocument) ? styles.loading : ''}`}>
+          <div className={`${styles.form} ${(loading || loadingPrompt || loadingRespuestaPrompt) ? styles.loading : ''}`}>
             <h2 className={styles.phaseTitle}>Fase 1: Selección</h2>
             <p className={styles.phaseDescription}>
-              Selecciona la programación anual, la unidad de aprendizaje y la sesión. Los botones se activarán al elegir la sesión.
+              Selecciona la programación anual, la unidad de aprendizaje y la sesión. El botón &quot;Generar documento&quot; se activará al elegir la sesión.
             </p>
 
             <div className={styles.formGroup}>
@@ -347,10 +467,10 @@ export default function RubricasSoloPage() {
               <button
                 type="button"
                 className={styles.button}
-                disabled={!puedeGenerar || loadingDocument}
+                disabled={!puedeGenerar || loading}
                 onClick={handleGenerarDocumento}
               >
-                {loadingDocument ? 'Generando…' : 'Generar documento'}
+                {loading ? 'Generando…' : 'Generar documento'}
               </button>
             </div>
           </div>
@@ -360,7 +480,7 @@ export default function RubricasSoloPage() {
       {showModalGeneracion && (
         <div className={styles.modalOverlay} onClick={() => setShowModalGeneracion(false)}>
           <div className={styles.modalBox} onClick={(e) => e.stopPropagation()}>
-            <h3 className={styles.modalTitle}>Esta sesión ya tiene rúbrica guardada</h3>
+            <h3 className={styles.modalTitle}>Esta sesión ya tiene contenido guardado</h3>
             <p style={{ color: '#666', fontSize: '14px', margin: 0 }}>
               Puedes generar el documento con lo guardado o volver a generar con la IA.
             </p>

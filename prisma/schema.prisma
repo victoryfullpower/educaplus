@@ -8,23 +8,35 @@ datasource db {
 }
 
 model User {
-  email         String      @unique
-  password      String
-  name          String?
-  rol           String      @default("Usuario") // "Administrador" o "Usuario"
-  createdAt     DateTime    @default(now())
-  updatedAt     DateTime    @updatedAt
-  id            Int         @id @default(autoincrement())
-  planesAnuales PlanAnual[]
+  email              String              @unique
+  password           String
+  name               String?
+  rol                String               @default("Usuario") // "Administrador" o "Usuario"
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime             @updatedAt
+  id                 Int                  @id @default(autoincrement())
+  planesAnuales      PlanAnual[]
+  unidadesAprendizaje UnidadAprendizaje[]
 }
 
 model Area {
-  id           Int           @id @default(autoincrement())
-  descripcion  String
-  sesionx2     Boolean?      @default(false)
-  competencias Competencia[]
+  id                 Int                 @id @default(autoincrement())
+  descripcion        String
+  sesionx2           Boolean?            @default(false)
+  competencias       Competencia[]
+  procesosDidacticos ProcesoDidactico[]
 
   @@map("area")
+}
+
+model ProcesoDidactico {
+  idproceso          Int    @id @map("idproceso")
+  descripcion        String
+  competenciaProceso Json   @map("competencia_proceso") // array de strings: competencias del proceso
+  idarea             Int    @map("idarea")
+  area               Area   @relation(fields: [idarea], references: [id])
+
+  @@map("procesodidactico")
 }
 
 model Nivel {
@@ -167,6 +179,164 @@ model PlanAnual {
 
   @@unique([idusuario, anio])
   @@map("plananual")
+}
+
+model UnidadAprendizaje {
+  id        Int      @id @default(autoincrement())
+  idusuario Int      @map("idusuario")
+  idplananual Int?   @map("idplananual") // Relación opcional con PlanAnual
+  anio      Int
+  fechaHora DateTime @default(now()) @map("fechahora")
+
+  // Datos básicos
+  area         String?
+  areaId       String? @map("area_id")
+  grado        String?
+  gradoId      String? @map("grado_id")
+  ciclo        String?
+  cicloId      String? @map("ciclo_id")
+  unidad       String? // Número de unidad (ej: "1", "2", etc.)
+  
+  // Datos institucionales
+  institucion  String?
+  tipoIE       String? @map("tipo_ie")
+  director     String?
+  docente      String?
+  duracion     String?
+  
+  // Datos temporales
+  fechaInicio  String? @map("fecha_inicio")
+  fechaTermino String? @map("fecha_termino")
+  
+  // Datos de contenido
+  situacionSignificativa String? @db.Text @map("situacion_significativa")
+  producto               String? @db.Text
+  tituloUnidad            String? @map("titulo_unidad")
+  propositoUnidad         String? @db.Text @map("proposito_unidad")
+  competencias            Json? // Array de IDs de competencias
+  campoTematico           String? @db.Text @map("campo_tematico")
+  numeroSesiones          String? @map("numero_sesiones")
+  instrumentoEvaluacion   String? @map("instrumento_evaluacion")
+  
+  // Sesiones (JSON) - Array de sesiones con sus datos (legacy, se mantiene por compatibilidad)
+  sesiones Json? // Array de sesiones: [{ titulo, competenciasSeleccionadas, capacidadesSeleccionadas, desempeniosSeleccionados, instrumentoEvaluacion }]
+
+  // Sesiones en tabla normalizada (una fila por sesión generada por IA)
+  listaSesiones Sesion[]
+
+  // Enfoques transversales (JSON) - Array de { enfoque, valor, actitud }
+  enfoquesTransversales Json? @map("enfoques_transversales")
+  
+  // Variables dinámicas del template (JSON)
+  variablesTemplate Json? @map("variables_template") // Variables dinámicas del template (aiProvider, openaiModel, etc.)
+
+  // Relación con User
+  usuario User @relation(fields: [idusuario], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([idusuario, anio, areaId, gradoId, unidad])
+  @@map("unidadaprendizaje")
+}
+
+model Sesion {
+  id                      Int      @id @default(autoincrement())
+  idunidadaprendizaje     Int      @map("idunidadaprendizaje")
+  numeroSesion            Int      @map("numero_sesion") // 1, 2, 3... orden dentro de la unidad
+
+  // Controles mapeados de Fase 1 del wizard (sesiones-fichas)
+  area                    String?  // Área Curricular
+  areaId                  String?  @map("area_id")
+  grado                   String?  // Grado Escolar
+  gradoId                 String?  @map("grado_id")
+  ciclo                   String?  // Ciclo (según grado)
+  cicloId                 String?  @map("ciclo_id")
+  institucion             String?  // Nombre de la Institución Educativa (Opcional)
+  director                String?  // Director (Opcional)
+  docente                 String?  // Nombre del docente (Opcional)
+  duracion                String?  // Duración: 45, 90, 135 minutos (Opcional)
+  fecha                   String?  // Fecha (Opcional)
+  unidad                  String?  // Unidad - ej: 1, 2, 3 (Opcional)
+
+  // Controles mapeados de Fase 2 del wizard (sesiones-fichas)
+  titulo                  String?  @db.Text
+  campoTematico           String?  @db.Text @map("campo_tematico")
+  criterios               String?  @db.Text
+  evidencias              String?  @db.Text
+  instrumentoEvaluacion   String?  @map("instrumento_evaluacion")
+  competenciasSeleccionadas Json?   @map("competencias_seleccionadas")
+  capacidadesSeleccionadas Json?   @map("capacidades_seleccionadas")
+  desempeniosSeleccionados Json?   @map("desempenios_seleccionados")
+
+  // Contenido extraído de la IA (para generar documento sin volver a llamar a la IA)
+  motivacion         String? @db.Text
+  saberes            String? @db.Text
+  problematizacion   String? @db.Text
+  proposito          String? @db.Text
+  standar            String? @db.Text
+  desarrolloantes    String? @db.Text
+  desarrollodurante  String? @db.Text
+  desarrollodespues  String? @db.Text
+  desarrollo         String? @db.Text
+
+  createdAt               DateTime @default(now()) @map("created_at")
+  updatedAt               DateTime @updatedAt @map("updated_at")
+
+  unidadAprendizaje UnidadAprendizaje @relation(fields: [idunidadaprendizaje], references: [id], onDelete: Cascade)
+  fichaAprendizaje   FichaAprendizaje?
+  rubrica            Rubrica?
+
+  @@unique([idunidadaprendizaje, numeroSesion])
+  @@map("sesion")
+}
+
+model Rubrica {
+  id               Int      @id @default(autoincrement())
+  idsesion         Int      @unique @map("idsesion")
+  area             String?  @db.Text
+  competencia      String?  @db.Text
+  capacidad        String?  @db.Text
+  standar          String?  @db.Text
+  grado            String?  @db.Text
+  titulosesion     String?  @db.Text @map("titulosesion")
+  evidencia        String?  @db.Text
+  proposito        String?  @db.Text
+  tabladinamica    String?  @db.Text @map("tabladinamica")
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  sesion Sesion @relation(fields: [idsesion], references: [id], onDelete: Cascade)
+
+  @@map("rubrica")
+}
+
+model FichaAprendizaje {
+  id                 Int      @id @default(autoincrement())
+  idsesion           Int      @unique @map("idsesion")
+  area               String?  @db.Text
+  grado              String?  @db.Text
+  titulosesion       String?  @db.Text @map("titulosesion")
+  titulodesesion     String?  @db.Text @map("titulodesesion")
+  proposito          String?  @db.Text
+  competencia        String?  @db.Text
+  capacidad          String?  @db.Text
+  evidencia          String?  @db.Text
+  criterios          String?  @db.Text
+  saber1             String?  @db.Text
+  saber2             String?  @db.Text
+  saber3             String?  @db.Text
+  respuestaprompt    String?  @db.Text @map("respuestaprompt")
+  duracion           String?  @db.Text
+  desarrolloantes    String?  @db.Text @map("desarrolloantes")
+  desarrollodurante  String?  @db.Text @map("desarrollodurante")
+  desarrollodespues  String?  @db.Text @map("desarrollodespues")
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @updatedAt @map("updated_at")
+
+  sesion Sesion @relation(fields: [idsesion], references: [id], onDelete: Cascade)
+
+  @@map("fichaaprendizaje")
 }
 
 model Prompt {

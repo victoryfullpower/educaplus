@@ -73,6 +73,18 @@ export async function POST(request: NextRequest) {
     // Array para el prompt: lista de competencias con número de capacidades
     const competenciasParaPrompt: Array<{ descripcion: string; numCapacidades: number }> = []
     
+    // Declarar sesionesGuardadas en scope amplio para que esté disponible en todo el código
+    let sesionesGuardadas: Array<{
+      titulo: string
+      campoTematico: string
+      competenciasSeleccionadas: string[]
+      capacidadesSeleccionadas: string[]
+      desempeniosSeleccionados: string[]
+      evidencias: string
+      criterios: string
+      instrumentoEvaluacion: string
+    }> | null = null
+    
     try {
       const userId = await getUserId(request)
       if (!userId) {
@@ -89,6 +101,72 @@ export async function POST(request: NextRequest) {
       // Asegurarnos de obtener el ID del grado, no el nombre
       const gradoId = formData.gradoId || (formData.grado && typeof formData.grado === 'string' ? formData.grado.split('|')[0] : formData.grado)
       const anio = formData.anio || new Date().getFullYear()
+      
+      // Verificar si se debe forzar regeneración (parámetro opcional)
+      const forzarRegeneracion = formData.forzarRegeneracion === true || formData.regenerar === true
+
+      // ===== OPTIMIZACIÓN: Consultar si existe unidad guardada con sesiones =====
+      // Si existe y tiene sesiones guardadas, usar esos datos en lugar de generar con IA
+      let unidadGuardada: any = null
+      
+      if (!forzarRegeneracion && unidad && areaId && gradoId) {
+        try {
+          unidadGuardada = await prisma.unidadAprendizaje.findFirst({
+            where: {
+              idusuario: userId,
+              anio: parseInt(String(anio)),
+              areaId: String(areaId),
+              gradoId: String(gradoId),
+              unidad: String(unidad)
+            }
+          })
+          
+          // Si existe y tiene sesiones guardadas, usarlas y reparar las que se cortaron por coma
+          if (unidadGuardada && unidadGuardada.sesiones) {
+            try {
+              const sesionesParsed = typeof unidadGuardada.sesiones === 'string' 
+                ? JSON.parse(unidadGuardada.sesiones) 
+                : unidadGuardada.sesiones
+              
+              if (Array.isArray(sesionesParsed) && sesionesParsed.length > 0) {
+                const sesionesConDatos = sesionesParsed.filter((s: any) => 
+                  s && (s.titulo || (Array.isArray(s.competenciasSeleccionadas) && s.competenciasSeleccionadas.length > 0))
+                )
+                if (sesionesConDatos.length > 0) {
+                  const repararListaCortadaPorComa = (arr: string[]): string[] => {
+                    if (!Array.isArray(arr) || arr.length <= 1) return arr
+                    const out: string[] = []
+                    let i = 0
+                    while (i < arr.length) {
+                      let item = (arr[i] || '').trim()
+                      while (i + 1 < arr.length) {
+                        const next = (arr[i + 1] || '').trim()
+                        if (/^[a-záéíóúñ]/.test(next)) {
+                          item = item + ', ' + next
+                          i++
+                        } else break
+                      }
+                      if (item) out.push(item)
+                      i++
+                    }
+                    return out
+                  }
+                  sesionesGuardadas = sesionesConDatos.map((s: any) => ({
+                    ...s,
+                    competenciasSeleccionadas: repararListaCortadaPorComa(s.competenciasSeleccionadas || []),
+                    capacidadesSeleccionadas: repararListaCortadaPorComa(s.capacidadesSeleccionadas || []),
+                    desempeniosSeleccionados: repararListaCortadaPorComa(s.desempeniosSeleccionados || [])
+                  }))
+                }
+              }
+            } catch (parseError) {
+              // Si hay error al parsear, continuar con generación normal
+            }
+          }
+        } catch (error) {
+          // Si hay error al buscar, continuar con generación normal
+        }
+      }
 
       if (!unidad || !areaId || !gradoId) {
       } else {
@@ -528,7 +606,9 @@ export async function POST(request: NextRequest) {
 
     // Obtener enfoques transversales, valores y actitudes generados por IA
     let enfoquesArray: Array<{ enfoque: string; valor: string; actitud: string }> = []
-    
+    // Snapshot para guardar en BD (se asigna justo después de generar con IA)
+    let enfoquesGeneradosParaBD: Array<{ enfoque: string; valor: string; actitud: string }> | null = null
+
     // Obtener datos necesarios del formData para enfoques (si no están definidos)
     const unidadParaEnfoques = formData.unidad
     const areaIdParaEnfoques = formData.areaId || (formData.area && typeof formData.area === 'string' ? formData.area.split('|')[0] : formData.area)
@@ -786,8 +866,13 @@ export async function POST(request: NextRequest) {
       } catch (error) {
         // Error silencioso, usar enfoques vacíos
       }
+      // Capturar lo generado por la IA para guardarlo en enfoques_transversales
+      enfoquesGeneradosParaBD = enfoquesArray.length > 0 ? JSON.parse(JSON.stringify(enfoquesArray)) : null
     }
-    
+
+    // ===== GUARDAR EN BD (dentro del bloque else donde las variables están disponibles) =====
+    // Guardaremos después de generar el documento, pero preparamos aquí las variables necesarias
+    // El guardado real se hará después de generar el buffer del documento
 
     // Preparar los datos para reemplazar en la plantilla
     const data: any = {
@@ -1593,11 +1678,211 @@ export async function POST(request: NextRequest) {
       const bodyContent = xmlFinal.substring(bodyStart, bodyEnd + 8)
       const tablasEnBody = (bodyContent.match(/<w:tbl>/g) || []).length
 
+      // Declarar array de sesiones generadas por IA en scope amplio para usarlo al guardar
+      let sesionesGeneradasPorIA: Array<{
+        titulo: string
+        campoTematico: string
+        competenciasSeleccionadas: string[]
+        capacidadesSeleccionadas: string[]
+        desempeniosSeleccionados: string[]
+        evidencias: string
+        criterios: string
+        instrumentoEvaluacion: string
+      }> = []
+      
+      // Variable para controlar si se debe generar con IA o usar datos guardados
+      let usarSesionesGuardadas = false
+      let tablaDidacticaXMLDesdeGuardadas = ''
+      let tablaDidacticaXML = '' // Declarar en scope amplio
+      
+      // Función para generar tabla didáctica desde sesiones guardadas (sin IA)
+      // DEBE estar definida ANTES de usarse
+      const generarTablaDesdeSesionesGuardadas = (sesiones: Array<{
+        titulo: string
+        campoTematico?: string
+        competenciasSeleccionadas: string[]
+        capacidadesSeleccionadas: string[]
+        desempeniosSeleccionados: string[]
+        evidencias?: string
+        criterios?: string
+        instrumentoEvaluacion: string
+      }>): string => {
+        const columnasEsperadas = 8
+        const anchoColumna = Math.floor(14869 / columnasEsperadas)
+        
+        let tablaXML = `<w:tbl><w:tblPr><w:tblStyle w:val="TableGrid"/><w:tblW w:w="14869" w:type="dxa"/><w:jc w:val="center"/><w:tblBorders><w:top w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:left w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:right w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:insideH w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:insideV w:val="double" w:sz="4" w:space="0" w:color="00B050"/></w:tblBorders><w:tblLayout w:type="fixed"/></w:tblPr><w:tblGrid>`
+        
+        // Agregar 8 columnas al grid
+        for (let i = 0; i < columnasEsperadas; i++) {
+          tablaXML += `<w:gridCol w:w="${anchoColumna}"/>`
+        }
+        tablaXML += `</w:tblGrid>`
+        
+        // FILA 1: Encabezados agrupados
+        tablaXML += `<w:tr><w:trPr><w:trHeight w:val="400" w:rule="atLeast"/></w:trPr>`
+        tablaXML += `<w:tc><w:tcPr><w:gridSpan w:val="5"/><w:tcW w:w="${anchoColumna * 5}" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="47D459"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="4" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="center"/></w:tcPr>`
+        tablaXML += `<w:p><w:pPr><w:jc w:val="center"/><w:spacing w:after="100" w:before="100"/></w:pPr><w:r><w:rPr><w:sz w:val="16"/><w:b/><w:color w:val="000000"/></w:rPr><w:t>${escaparXML('PROPÓSITOS DE APRENDIZAJE')}</w:t></w:r></w:p></w:tc>`
+        tablaXML += `<w:tc><w:tcPr><w:gridSpan w:val="3"/><w:tcW w:w="${anchoColumna * 3}" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="47D459"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="4" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="center"/></w:tcPr>`
+        tablaXML += `<w:p><w:pPr><w:jc w:val="center"/><w:spacing w:after="100" w:before="100"/></w:pPr><w:r><w:rPr><w:sz w:val="16"/><w:b/><w:color w:val="000000"/></w:rPr><w:t>${escaparXML('EVALUACIÓN')}</w:t></w:r></w:p></w:tc>`
+        tablaXML += `</w:tr>`
+        
+        // FILA 2: Sub-headers
+        tablaXML += `<w:tr><w:trPr><w:trHeight w:val="400" w:rule="atLeast"/></w:trPr>`
+        const subHeadersPropuestos = ['TÍTULOS', 'CAMPO TEMÁTICO / CONOCIMIENTO', 'COMPETENCIA', 'CAPACIDADES', 'DESEMPEÑO PRECISADO']
+        subHeadersPropuestos.forEach((header) => {
+          tablaXML += `<w:tc><w:tcPr><w:tcW w:w="${anchoColumna}" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="C1F0C7"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="4" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="center"/></w:tcPr>`
+          tablaXML += `<w:p><w:pPr><w:jc w:val="center"/><w:spacing w:after="100" w:before="100"/></w:pPr><w:r><w:rPr><w:sz w:val="16"/><w:b/><w:color w:val="000000"/></w:rPr><w:t>${escaparXML(header)}</w:t></w:r></w:p></w:tc>`
+        })
+        const subHeadersEvaluacion = ['EVIDENCIAS', 'CRITERIOS', 'INSTRUMENTO DE EVALUACIÓN']
+        subHeadersEvaluacion.forEach((header) => {
+          tablaXML += `<w:tc><w:tcPr><w:tcW w:w="${anchoColumna}" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="C1F0C7"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="4" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="center"/></w:tcPr>`
+          tablaXML += `<w:p><w:pPr><w:jc w:val="center"/><w:spacing w:after="100" w:before="100"/></w:pPr><w:r><w:rPr><w:sz w:val="16"/><w:b/><w:color w:val="000000"/></w:rPr><w:t>${escaparXML(header)}</w:t></w:r></w:p></w:tc>`
+        })
+        tablaXML += `</w:tr>`
+        
+        // FILAS DE DATOS: Generar una fila por cada sesión
+        sesiones.forEach((sesion, index) => {
+          const numeroSesion = index + 1
+          tablaXML += `<w:tr><w:trPr><w:trHeight w:val="400" w:rule="atLeast"/></w:trPr>`
+          
+          // Columna 0: TÍTULOS (con "Sesión X:")
+          tablaXML += `<w:tc><w:tcPr><w:tcW w:w="${anchoColumna}" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="FFFFFF"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="4" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="top"/></w:tcPr>`
+          tablaXML += `<w:p><w:pPr><w:spacing w:after="50" w:before="100"/></w:pPr><w:r><w:rPr><w:sz w:val="16"/><w:color w:val="000000"/></w:rPr><w:t>${escaparXML(`Sesión ${numeroSesion}:`)}</w:t></w:r></w:p>`
+          tablaXML += `<w:p><w:pPr><w:spacing w:after="100" w:before="0"/></w:pPr><w:r><w:rPr><w:sz w:val="16"/><w:color w:val="000000"/></w:rPr><w:t>${escaparXML(sesion.titulo || '')}</w:t></w:r></w:p></w:tc>`
+          
+          // Columna 1: CAMPO TEMÁTICO / CONOCIMIENTO
+          const campoTematicoTexto = sesion.campoTematico || ''
+          tablaXML += `<w:tc><w:tcPr><w:tcW w:w="${anchoColumna}" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="FFFFFF"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="4" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="top"/></w:tcPr>`
+          tablaXML += `<w:p><w:pPr><w:spacing w:after="100" w:before="100"/></w:pPr><w:r><w:rPr><w:sz w:val="16"/><w:color w:val="000000"/></w:rPr><w:t>${escaparXML(campoTematicoTexto)}</w:t></w:r></w:p></w:tc>`
+          
+          // Columna 2: COMPETENCIA
+          const competenciasTexto = Array.isArray(sesion.competenciasSeleccionadas) 
+            ? sesion.competenciasSeleccionadas.join(', ') 
+            : ''
+          tablaXML += `<w:tc><w:tcPr><w:tcW w:w="${anchoColumna}" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="FFFFFF"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="4" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="top"/></w:tcPr>`
+          tablaXML += `<w:p><w:pPr><w:spacing w:after="100" w:before="100"/></w:pPr><w:r><w:rPr><w:sz w:val="16"/><w:color w:val="000000"/></w:rPr><w:t>${escaparXML(competenciasTexto)}</w:t></w:r></w:p></w:tc>`
+          
+          // Columna 3: CAPACIDADES (con viñetas y saltos de línea)
+          tablaXML += `<w:tc><w:tcPr><w:tcW w:w="${anchoColumna}" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="FFFFFF"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="4" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="top"/></w:tcPr>`
+          
+          if (Array.isArray(sesion.capacidadesSeleccionadas) && sesion.capacidadesSeleccionadas.length > 0) {
+            sesion.capacidadesSeleccionadas.forEach((capacidad: string, idx: number) => {
+              // Limpiar <br> tags y procesar múltiples líneas
+              let capacidadLimpia = (capacidad || '').replace(/<br\s*\/?>/gi, '\n').replace(/<BR\s*\/?>/gi, '\n').trim()
+              
+              // Si tiene múltiples líneas, procesar cada una
+              const lineasCapacidad = capacidadLimpia.split('\n').filter((l: string) => l.trim())
+              
+              lineasCapacidad.forEach((linea: string, lineaIdx: number) => {
+                const lineaLimpia = linea.trim()
+                if (lineaLimpia) {
+                  // Si la línea ya tiene viñeta, mantenerla; si no, agregarla
+                  const lineaConVinieta = lineaLimpia.startsWith('•') || lineaLimpia.startsWith('-') || lineaLimpia.startsWith('*')
+                    ? lineaLimpia
+                    : `• ${lineaLimpia}`
+                  
+                  const capacidadEscapada = escaparXML(lineaConVinieta)
+                  const esUltimaLinea = lineaIdx === lineasCapacidad.length - 1
+                  const esUltimoItem = idx === sesion.capacidadesSeleccionadas.length - 1
+                  
+                  tablaXML += `<w:p><w:pPr><w:spacing w:after="${esUltimaLinea && esUltimoItem ? 100 : 50}" w:before="${lineaIdx === 0 && idx === 0 ? 100 : 50}"/></w:pPr><w:r><w:rPr><w:sz w:val="16"/><w:color w:val="000000"/></w:rPr><w:t>${capacidadEscapada}</w:t></w:r></w:p>`
+                }
+              })
+            })
+          } else {
+            tablaXML += `<w:p><w:pPr><w:spacing w:after="100" w:before="100"/></w:pPr><w:r><w:rPr><w:sz w:val="16"/><w:color w:val="000000"/></w:rPr><w:t> </w:t></w:r></w:p>`
+          }
+          tablaXML += `</w:tc>`
+          
+          // Columna 4: DESEMPEÑO PRECISADO (solo saltos de línea, sin viñetas)
+          tablaXML += `<w:tc><w:tcPr><w:tcW w:w="${anchoColumna}" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="FFFFFF"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="4" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="top"/></w:tcPr>`
+          
+          if (Array.isArray(sesion.desempeniosSeleccionados) && sesion.desempeniosSeleccionados.length > 0) {
+            sesion.desempeniosSeleccionados.forEach((desempenio: string, idx: number) => {
+              // Limpiar <br> tags y procesar múltiples líneas
+              let desempenioLimpio = (desempenio || '').replace(/<br\s*\/?>/gi, '\n').replace(/<BR\s*\/?>/gi, '\n').trim()
+              
+              // Si tiene múltiples líneas, procesar cada una (sin viñetas)
+              const lineasDesempenio = desempenioLimpio.split('\n').filter((l: string) => l.trim())
+              
+              lineasDesempenio.forEach((linea: string, lineaIdx: number) => {
+                const lineaLimpia = linea.trim()
+                if (lineaLimpia) {
+                  // Remover viñetas si las tiene, solo mantener el texto
+                  const lineaSinVinieta = lineaLimpia.replace(/^[•\-\*]\s*/, '').trim()
+                  
+                  const desempenioEscapado = escaparXML(lineaSinVinieta)
+                  const esUltimaLinea = lineaIdx === lineasDesempenio.length - 1
+                  const esUltimoItem = idx === sesion.desempeniosSeleccionados.length - 1
+                  
+                  tablaXML += `<w:p><w:pPr><w:spacing w:after="${esUltimaLinea && esUltimoItem ? 100 : 50}" w:before="${lineaIdx === 0 && idx === 0 ? 100 : 50}"/></w:pPr><w:r><w:rPr><w:sz w:val="16"/><w:color w:val="000000"/></w:rPr><w:t>${desempenioEscapado}</w:t></w:r></w:p>`
+                }
+              })
+            })
+          } else {
+            tablaXML += `<w:p><w:pPr><w:spacing w:after="100" w:before="100"/></w:pPr><w:r><w:rPr><w:sz w:val="16"/><w:color w:val="000000"/></w:rPr><w:t> </w:t></w:r></w:p>`
+          }
+          tablaXML += `</w:tc>`
+          
+          // Columna 5: EVIDENCIAS
+          const evidenciasTexto = sesion.evidencias || ''
+          tablaXML += `<w:tc><w:tcPr><w:tcW w:w="${anchoColumna}" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="FFFFFF"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="4" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="top"/></w:tcPr>`
+          tablaXML += `<w:p><w:pPr><w:spacing w:after="100" w:before="100"/></w:pPr><w:r><w:rPr><w:sz w:val="16"/><w:color w:val="000000"/></w:rPr><w:t>${escaparXML(evidenciasTexto)}</w:t></w:r></w:p></w:tc>`
+          
+          // Columna 6: CRITERIOS (con viñetas y saltos de línea)
+          tablaXML += `<w:tc><w:tcPr><w:tcW w:w="${anchoColumna}" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="FFFFFF"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="4" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="top"/></w:tcPr>`
+          
+          if (sesion.criterios) {
+            // Limpiar <br> tags y dividir por saltos de línea
+            const criteriosLimpio = (sesion.criterios || '').replace(/<br\s*\/?>/gi, '\n').replace(/<BR\s*\/?>/gi, '\n')
+            const criteriosLineas = criteriosLimpio.split('\n').filter((linea: string) => linea.trim())
+            
+            if (criteriosLineas.length > 0) {
+              criteriosLineas.forEach((linea: string, idx: number) => {
+                const lineaLimpia = linea.trim()
+                if (lineaLimpia) {
+                  // Si la línea ya tiene viñeta, mantenerla; si no, agregarla
+                  const lineaConVinieta = lineaLimpia.startsWith('•') || lineaLimpia.startsWith('-') || lineaLimpia.startsWith('*')
+                    ? lineaLimpia
+                    : `• ${lineaLimpia}`
+                  const lineaEscapada = escaparXML(lineaConVinieta)
+                  tablaXML += `<w:p><w:pPr><w:spacing w:after="${idx < criteriosLineas.length - 1 ? 50 : 100}" w:before="${idx === 0 ? 100 : 50}"/></w:pPr><w:r><w:rPr><w:sz w:val="16"/><w:color w:val="000000"/></w:rPr><w:t>${lineaEscapada}</w:t></w:r></w:p>`
+                }
+              })
+            } else {
+              tablaXML += `<w:p><w:pPr><w:spacing w:after="100" w:before="100"/></w:pPr><w:r><w:rPr><w:sz w:val="16"/><w:color w:val="000000"/></w:rPr><w:t> </w:t></w:r></w:p>`
+            }
+          } else {
+            tablaXML += `<w:p><w:pPr><w:spacing w:after="100" w:before="100"/></w:pPr><w:r><w:rPr><w:sz w:val="16"/><w:color w:val="000000"/></w:rPr><w:t> </w:t></w:r></w:p>`
+          }
+          tablaXML += `</w:tc>`
+          
+          // Columna 7: INSTRUMENTO DE EVALUACIÓN
+          tablaXML += `<w:tc><w:tcPr><w:tcW w:w="${anchoColumna}" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="FFFFFF"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="4" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="top"/></w:tcPr>`
+          tablaXML += `<w:p><w:pPr><w:spacing w:after="100" w:before="100"/></w:pPr><w:r><w:rPr><w:sz w:val="16"/><w:color w:val="000000"/></w:rPr><w:t>${escaparXML(sesion.instrumentoEvaluacion || '')}</w:t></w:r></w:p></w:tc>`
+          
+          tablaXML += `</w:tr>`
+        })
+        
+        tablaXML += `</w:tbl>`
+        return tablaXML
+      }
+      
+      // Si hay sesiones guardadas, usarlas para generar la tabla sin IA
+      if (sesionesGuardadas && sesionesGuardadas.length > 0) {
+        usarSesionesGuardadas = true
+        sesionesGeneradasPorIA = sesionesGuardadas // Asignar para que se usen al guardar
+        tablaDidacticaXMLDesdeGuardadas = generarTablaDesdeSesionesGuardadas(sesionesGuardadas)
+        tablaDidacticaXML = tablaDidacticaXMLDesdeGuardadas // Asignar directamente
+      }
+      
       // Generar prompt con GPT y agregar al final del documento
-      try {
-        // Leer directamente el Word del prompt (igual que generate-prompt)
-        const promptWordPath = path.join(process.cwd(), 'templates', 'PROMT_UNIDAD DE APRENDIZAJE.docx')
-        if (fs.existsSync(promptWordPath)) {
+      // Solo generar con IA si no hay sesiones guardadas
+      if (!usarSesionesGuardadas) {
+        try {
+          // Leer directamente el Word del prompt (igual que generate-prompt)
+          const promptWordPath = path.join(process.cwd(), 'templates', 'PROMT_UNIDAD DE APRENDIZAJE.docx')
+          if (fs.existsSync(promptWordPath)) {
           const wordBuffer = fs.readFileSync(promptWordPath)
           const result = await mammoth.extractRawText({ buffer: wordBuffer })
           let promptText = result.value || ''
@@ -1948,18 +2233,56 @@ export async function POST(request: NextRequest) {
                       tablaXML += `<w:p><w:pPr><w:spacing w:after="100" w:before="0"/></w:pPr><w:r><w:rPr><w:sz w:val="16"/><w:color w:val="000000"/></w:rPr><w:t>${tituloEscapado}</w:t></w:r></w:p>`
                     } else {
                       // Para las demás columnas, procesar normalmente
+                      // Columnas que necesitan viñetas: CAPACIDADES (3), CRITERIOS (6)
+                      // DESEMPEÑO PRECISADO (4) solo necesita saltos de línea, sin viñetas
+                      const columnasConVinietas = [3, 6]
+                      const necesitaVinietas = columnasConVinietas.includes(indiceColumna)
+                      const esDesempenio = indiceColumna === 4
+                      
                       // Si la celda tiene múltiples líneas (por <br> convertidos), crear múltiples párrafos
                       const lineasCelda = celdaLimpia.split('\n').filter((l: string) => l.trim() || l === '')
                       
-                      if (lineasCelda.length > 1) {
-                        // Múltiples líneas - crear múltiples párrafos
+                      if (lineasCelda.length > 1 || necesitaVinietas || esDesempenio) {
+                        // Múltiples líneas o columna que necesita viñetas o es DESEMPEÑO PRECISADO - crear múltiples párrafos
                         lineasCelda.forEach((linea, idx) => {
-                          const lineaEscapada = escaparXML(linea || ' ')
+                          let lineaProcesada = linea || ' '
+                          
+                          if (esDesempenio && linea.trim()) {
+                            // DESEMPEÑO PRECISADO: remover viñetas si las tiene, solo mantener el texto
+                            const lineaLimpia = linea.trim()
+                            lineaProcesada = lineaLimpia.replace(/^[•\-\*]\s*/, '').trim()
+                          } else if (necesitaVinietas && linea.trim()) {
+                            // CAPACIDADES o CRITERIOS: agregar viñeta si no tiene
+                            const lineaLimpia = linea.trim()
+                            if (!lineaLimpia.startsWith('•') && !lineaLimpia.startsWith('-') && !lineaLimpia.startsWith('*')) {
+                              lineaProcesada = `• ${lineaLimpia}`
+                            } else {
+                              lineaProcesada = lineaLimpia
+                            }
+                          }
+                          
+                          const lineaEscapada = escaparXML(lineaProcesada)
                           tablaXML += `<w:p><w:pPr><w:spacing w:after="${idx < lineasCelda.length - 1 ? 50 : 100}" w:before="${idx === 0 ? 100 : 50}"/></w:pPr><w:r><w:rPr><w:sz w:val="16"/><w:color w:val="000000"/></w:rPr><w:t>${lineaEscapada}</w:t></w:r></w:p>`
                         })
                       } else {
                         // Una sola línea
-                        const celdaEscapada = escaparXML(celdaLimpia || ' ')
+                        let celdaProcesada = celdaLimpia || ' '
+                        
+                        if (esDesempenio && celdaLimpia.trim()) {
+                          // DESEMPEÑO PRECISADO: remover viñetas si las tiene
+                          const celdaLimpiaTrim = celdaLimpia.trim()
+                          celdaProcesada = celdaLimpiaTrim.replace(/^[•\-\*]\s*/, '').trim()
+                        } else if (necesitaVinietas && celdaLimpia.trim()) {
+                          // CAPACIDADES o CRITERIOS: agregar viñeta si no tiene
+                          const celdaLimpiaTrim = celdaLimpia.trim()
+                          if (!celdaLimpiaTrim.startsWith('•') && !celdaLimpiaTrim.startsWith('-') && !celdaLimpiaTrim.startsWith('*')) {
+                            celdaProcesada = `• ${celdaLimpiaTrim}`
+                          } else {
+                            celdaProcesada = celdaLimpiaTrim
+                          }
+                        }
+                        
+                        const celdaEscapada = escaparXML(celdaProcesada)
                         tablaXML += `<w:p><w:pPr><w:spacing w:after="100" w:before="100"/></w:pPr><w:r><w:rPr><w:sz w:val="16"/><w:color w:val="000000"/></w:rPr><w:t>${celdaEscapada}</w:t></w:r></w:p>`
                       }
                     }
@@ -1974,8 +2297,83 @@ export async function POST(request: NextRequest) {
                 return tablaXML
               }
               
-              let tablaDidacticaXML = ''
+              // tablaDidacticaXML ya está declarada en scope amplio
               let bloqueActual: string[] = []
+              // Reiniciar el array de sesiones generadas por IA para este procesamiento
+              sesionesGeneradasPorIA = []
+              
+              // Función para extraer datos de sesiones desde las filas parseadas
+              const extraerDatosSesiones = (filas: string[][]) => {
+                // Saltar las primeras dos filas (encabezados) y procesar las filas de datos
+                for (let i = 2; i < filas.length; i++) {
+                  const fila = filas[i]
+                  
+                  // Verificar que la fila no sea un encabezado (contiene palabras clave de encabezados)
+                  const filaTexto = fila.join(' ').toUpperCase()
+                  const esEncabezado = filaTexto.includes('TÍTULOS') || 
+                                     filaTexto.includes('CAMPO TEMÁTICO') || 
+                                     filaTexto.includes('COMPETENCIA') || 
+                                     filaTexto.includes('CAPACIDADES') || 
+                                     filaTexto.includes('DESEMPEÑO') ||
+                                     filaTexto.includes('EVIDENCIAS') ||
+                                     filaTexto.includes('CRITERIOS') ||
+                                     filaTexto.includes('INSTRUMENTO') ||
+                                     filaTexto.includes('PROPÓSITOS') ||
+                                     filaTexto.includes('EVALUACIÓN') ||
+                                     /^[-:|]+$/.test(filaTexto.replace(/\s/g, '')) // Separadores como |---|---|
+                  
+                  if (esEncabezado) {
+                    continue // Saltar esta fila si es un encabezado
+                  }
+                  
+                  // Eliminar primera y última columna (slice(1, -1))
+                  const filaSinPrimeraYUltima = fila.slice(1, -1)
+                  
+                  // Estructura de la fila después de eliminar primera y última columna:
+                  // [0] TÍTULOS
+                  // [1] CAMPO TEMÁTICO / CONOCIMIENTO
+                  // [2] COMPETENCIA
+                  // [3] CAPACIDADES
+                  // [4] DESEMPEÑO PRECISADO
+                  // [5] EVIDENCIAS
+                  // [6] CRITERIOS
+                  // [7] INSTRUMENTO DE EVALUACIÓN
+                  
+                  if (filaSinPrimeraYUltima.length >= 8) {
+                    const titulo = (filaSinPrimeraYUltima[0] || '').trim()
+                    const campoTematico = (filaSinPrimeraYUltima[1] || '').trim()
+                    const competencia = (filaSinPrimeraYUltima[2] || '').trim()
+                    const capacidades = (filaSinPrimeraYUltima[3] || '').trim()
+                    const desempenios = (filaSinPrimeraYUltima[4] || '').trim()
+                    const evidencias = (filaSinPrimeraYUltima[5] || '').trim()
+                    const criterios = (filaSinPrimeraYUltima[6] || '').trim()
+                    const instrumentoEvaluacion = (filaSinPrimeraYUltima[7] || '').trim()
+                    
+                    // Verificar que al menos el título tenga contenido (para evitar guardar filas vacías o encabezados)
+                    if (!titulo || titulo.length < 3) {
+                      continue // Saltar filas sin título válido
+                    }
+                    
+                    // Parsear competencias, capacidades y desempeños. NO usar coma: muchas capacidades contienen coma (ej. "Adecúa, organiza y desarrolla...").
+                    // Separar solo por saltos de línea, <br> o viñeta • para no cortar texto interno.
+                    const normalizarParaSplit = (s: string) => (s || '').replace(/<br\s*\/?>/gi, '\n').replace(/<BR\s*\/?>/gi, '\n')
+                    const competenciasArray = competencia ? normalizarParaSplit(competencia).split(/[•\n]+/).map((c: string) => c.trim()).filter((c: string) => c && c.length > 2) : []
+                    const capacidadesArray = capacidades ? normalizarParaSplit(capacidades).split(/[•\n]+/).map((c: string) => c.trim()).filter((c: string) => c && c.length > 2) : []
+                    const desempeniosArray = desempenios ? normalizarParaSplit(desempenios).split(/[•\n]+/).map((d: string) => d.trim()).filter((d: string) => d && d.length > 2) : []
+                    
+                    sesionesGeneradasPorIA.push({
+                      titulo: titulo || '',
+                      campoTematico: campoTematico || '',
+                      competenciasSeleccionadas: competenciasArray,
+                      capacidadesSeleccionadas: capacidadesArray,
+                      desempeniosSeleccionados: desempeniosArray,
+                      evidencias: evidencias || '',
+                      criterios: criterios || '',
+                      instrumentoEvaluacion: instrumentoEvaluacion || ''
+                    })
+                  }
+                }
+              }
               
               // Solo procesar tablas, eliminar todo el texto fuera de las tablas
               for (let i = 0; i < lineas.length; i++) {
@@ -1989,6 +2387,8 @@ export async function POST(request: NextRequest) {
                     const tablaInfo = parsearTabla(bloqueActual)
                     
                     if (tablaInfo.esTabla && tablaInfo.filas && tablaInfo.numColumnas) {
+                      // Extraer datos de sesiones antes de convertir a XML
+                      extraerDatosSesiones(tablaInfo.filas)
                       // Crear tabla de Word
                       const tablaXML = convertirTablaAWordXML(tablaInfo.filas, tablaInfo.numColumnas)
                       tablaDidacticaXML += tablaXML
@@ -2011,6 +2411,8 @@ export async function POST(request: NextRequest) {
                       const tablaInfo = parsearTabla(bloqueActual)
                       
                       if (tablaInfo.esTabla && tablaInfo.filas && tablaInfo.numColumnas) {
+                        // Extraer datos de sesiones antes de convertir a XML
+                        extraerDatosSesiones(tablaInfo.filas)
                         const tablaXML = convertirTablaAWordXML(tablaInfo.filas, tablaInfo.numColumnas)
                         tablaDidacticaXML += tablaXML
                       }
@@ -2027,129 +2429,136 @@ export async function POST(request: NextRequest) {
                 const tablaInfo = parsearTabla(bloqueActual)
                 
                 if (tablaInfo.esTabla && tablaInfo.filas && tablaInfo.numColumnas) {
+                  // Extraer datos de sesiones antes de convertir a XML
+                  extraerDatosSesiones(tablaInfo.filas)
                   const tablaXML = convertirTablaAWordXML(tablaInfo.filas, tablaInfo.numColumnas)
                   tablaDidacticaXML += tablaXML
                 }
                 // Si no es tabla, NO agregar nada (eliminar el texto)
               }
-              
-              // Leer el XML actualizado después del render - usar el más reciente del zip
-              // IMPORTANTE: Leer siempre del zip porque puede haber sido modificado por otras tablas
-              let xmlFinalActualizado = zipAfterRender.files['word/document.xml']?.asText() || xmlFinal
-              
-              // Buscar placeholder {{tabladidactica}} - buscar todas las variaciones posibles
-              let placeholderIndex = xmlFinalActualizado.indexOf('__TABLA_DIDACTICA_PLACEHOLDER__')
-              let textoPlaceholder = '__TABLA_DIDACTICA_PLACEHOLDER__'
-              
-              // Si no se encuentra, buscar sin guiones al inicio
-              if (placeholderIndex === -1) {
-                placeholderIndex = xmlFinalActualizado.indexOf('TABLA_DIDACTICA_PLACEHOLDER')
-                if (placeholderIndex > -1) {
-                  textoPlaceholder = 'TABLA_DIDACTICA_PLACEHOLDER'
-                }
-              }
-              
-              // Si aún no se encuentra, buscar el texto que aparece en el documento (sin PLACEHOLDER)
-              if (placeholderIndex === -1) {
-                placeholderIndex = xmlFinalActualizado.indexOf('TABLA_DIDACTICA')
-                if (placeholderIndex > -1) {
-                  // Encontrar el texto completo alrededor de TABLA_DIDACTICA
-                  const inicio = Math.max(0, placeholderIndex - 10)
-                  const fin = Math.min(xmlFinalActualizado.length, placeholderIndex + 50)
-                  const contexto = xmlFinalActualizado.substring(inicio, fin)
-                  // Intentar encontrar el texto completo del placeholder
-                  const match = contexto.match(/[A-Z_]*TABLA_DIDACTICA[A-Z_]*/)
-                  if (match) {
-                    textoPlaceholder = match[0]
-                    placeholderIndex = xmlFinalActualizado.indexOf(textoPlaceholder, inicio)
-                  } else {
-                    textoPlaceholder = 'TABLA_DIDACTICA'
-                  }
-                }
-              }
-              
-              if (placeholderIndex > -1) {
-                // Buscar el párrafo que contiene el placeholder para reemplazarlo
-                let paraStart = -1
-                for (let i = placeholderIndex; i >= 0; i--) {
-                  if (xmlFinalActualizado.substring(i, i + 4) === '<w:p') {
-                    const charAfter = xmlFinalActualizado.charAt(i + 4)
-                    if (charAfter === ' ' || charAfter === '>') {
-                      paraStart = i
-                      break
-                    }
-                  }
-                }
-                
-                const paraEnd = xmlFinalActualizado.indexOf('</w:p>', placeholderIndex)
-                
-                if (paraStart > -1 && paraEnd > -1) {
-                  // Reemplazar TODO el párrafo con la tabla
-                  const antes = xmlFinalActualizado.substring(0, paraStart)
-                  const despues = xmlFinalActualizado.substring(paraEnd + 6)
-                  xmlFinalActualizado = antes + tablaDidacticaXML + despues
-                  zipAfterRender.file('word/document.xml', xmlFinalActualizado)
-                  xmlFinal = xmlFinalActualizado
-                } else {
-                  // Fallback: reemplazar solo el placeholder usando el textoPlaceholder encontrado
-                  const antes = xmlFinalActualizado.substring(0, placeholderIndex)
-                  const despues = xmlFinalActualizado.substring(placeholderIndex + textoPlaceholder.length)
-                  xmlFinalActualizado = antes + tablaDidacticaXML + despues
-                  zipAfterRender.file('word/document.xml', xmlFinalActualizado)
-                  xmlFinal = xmlFinalActualizado
-                }
-              } else {
-                const placeholderIndex2 = xmlFinalActualizado.indexOf('{{tabladidactica}}')
-                if (placeholderIndex2 > -1) {
-                  // Similar lógica de reemplazo
-                  let paraStart = -1
-                  for (let i = placeholderIndex2; i >= 0; i--) {
-                    if (xmlFinalActualizado.substring(i, i + 4) === '<w:p') {
-                      const charAfter = xmlFinalActualizado.charAt(i + 4)
-                      if (charAfter === ' ' || charAfter === '>') {
-                        paraStart = i
-                        break
-                      }
-                    }
-                  }
-                  const paraEnd = xmlFinalActualizado.indexOf('</w:p>', placeholderIndex2)
-                  if (paraStart > -1 && paraEnd > -1) {
-                    const antes = xmlFinalActualizado.substring(0, paraStart)
-                    const despues = xmlFinalActualizado.substring(paraEnd + 6)
-                    xmlFinalActualizado = antes + tablaDidacticaXML + despues
-                    zipAfterRender.file('word/document.xml', xmlFinalActualizado)
-                    xmlFinal = xmlFinalActualizado
-                  }
-                } else {
-                  // Buscar también el texto literal que aparece en el documento
-                  const placeholderIndex3 = xmlFinalActualizado.indexOf('TABLA_DIDACTICA_PLACEHOLDER')
-                  if (placeholderIndex3 > -1) {
-                    let paraStart = -1
-                    for (let i = placeholderIndex3; i >= 0; i--) {
-                      if (xmlFinalActualizado.substring(i, i + 4) === '<w:p') {
-                        const charAfter = xmlFinalActualizado.charAt(i + 4)
-                        if (charAfter === ' ' || charAfter === '>') {
-                          paraStart = i
-                          break
-                        }
-                      }
-                    }
-                    const paraEnd = xmlFinalActualizado.indexOf('</w:p>', placeholderIndex3)
-                    if (paraStart > -1 && paraEnd > -1) {
-                      const antes = xmlFinalActualizado.substring(0, paraStart)
-                      const despues = xmlFinalActualizado.substring(paraEnd + 6)
-                      xmlFinalActualizado = antes + tablaDidacticaXML + despues
-                      zipAfterRender.file('word/document.xml', xmlFinalActualizado)
-                      xmlFinal = xmlFinalActualizado
-                    }
-                  }
-                }
-              }
+            }
+          }
+          }
+        } catch (error) {
+          // Si hay error al generar con IA, continuar sin tabla didáctica
+        }
+      }
+      
+      // Si se usaron sesiones guardadas, tablaDidacticaXML ya está asignada arriba
+      // Si se generó con IA, tablaDidacticaXML se asignó dentro del bloque de procesamiento
+      // Si no hay ninguna, tablaDidacticaXML quedará vacía
+      
+      // Leer el XML actualizado después del render - usar el más reciente del zip
+      // IMPORTANTE: Leer siempre del zip porque puede haber sido modificado por otras tablas
+      let xmlFinalActualizado = zipAfterRender.files['word/document.xml']?.asText() || xmlFinal
+      
+      // Buscar placeholder {{tabladidactica}} - buscar todas las variaciones posibles
+      let placeholderIndex = xmlFinalActualizado.indexOf('__TABLA_DIDACTICA_PLACEHOLDER__')
+      let textoPlaceholder = '__TABLA_DIDACTICA_PLACEHOLDER__'
+      
+      // Si no se encuentra, buscar sin guiones al inicio
+      if (placeholderIndex === -1) {
+        placeholderIndex = xmlFinalActualizado.indexOf('TABLA_DIDACTICA_PLACEHOLDER')
+        if (placeholderIndex > -1) {
+          textoPlaceholder = 'TABLA_DIDACTICA_PLACEHOLDER'
+        }
+      }
+      
+      // Si aún no se encuentra, buscar el texto que aparece en el documento (sin PLACEHOLDER)
+      if (placeholderIndex === -1) {
+        placeholderIndex = xmlFinalActualizado.indexOf('TABLA_DIDACTICA')
+        if (placeholderIndex > -1) {
+          // Encontrar el texto completo alrededor de TABLA_DIDACTICA
+          const inicio = Math.max(0, placeholderIndex - 10)
+          const fin = Math.min(xmlFinalActualizado.length, placeholderIndex + 50)
+          const contexto = xmlFinalActualizado.substring(inicio, fin)
+          // Intentar encontrar el texto completo del placeholder
+          const match = contexto.match(/[A-Z_]*TABLA_DIDACTICA[A-Z_]*/)
+          if (match) {
+            textoPlaceholder = match[0]
+            placeholderIndex = xmlFinalActualizado.indexOf(textoPlaceholder, inicio)
+          } else {
+            textoPlaceholder = 'TABLA_DIDACTICA'
+          }
+        }
+      }
+      
+      if (placeholderIndex > -1) {
+        // Buscar el párrafo que contiene el placeholder para reemplazarlo
+        let paraStart = -1
+        for (let i = placeholderIndex; i >= 0; i--) {
+          if (xmlFinalActualizado.substring(i, i + 4) === '<w:p') {
+            const charAfter = xmlFinalActualizado.charAt(i + 4)
+            if (charAfter === ' ' || charAfter === '>') {
+              paraStart = i
+              break
             }
           }
         }
-      } catch (error: any) {
-        // No fallar la generación del documento si hay error con GPT
+        
+        const paraEnd = xmlFinalActualizado.indexOf('</w:p>', placeholderIndex)
+        
+        if (paraStart > -1 && paraEnd > -1) {
+          // Reemplazar TODO el párrafo con la tabla
+          const antes = xmlFinalActualizado.substring(0, paraStart)
+          const despues = xmlFinalActualizado.substring(paraEnd + 6)
+          xmlFinalActualizado = antes + tablaDidacticaXML + despues
+          zipAfterRender.file('word/document.xml', xmlFinalActualizado)
+          xmlFinal = xmlFinalActualizado
+        } else {
+          // Fallback: reemplazar solo el placeholder usando el textoPlaceholder encontrado
+          const antes = xmlFinalActualizado.substring(0, placeholderIndex)
+          const despues = xmlFinalActualizado.substring(placeholderIndex + textoPlaceholder.length)
+          xmlFinalActualizado = antes + tablaDidacticaXML + despues
+          zipAfterRender.file('word/document.xml', xmlFinalActualizado)
+          xmlFinal = xmlFinalActualizado
+        }
+      } else {
+        const placeholderIndex2 = xmlFinalActualizado.indexOf('{{tabladidactica}}')
+        if (placeholderIndex2 > -1) {
+          // Similar lógica de reemplazo
+          let paraStart = -1
+          for (let i = placeholderIndex2; i >= 0; i--) {
+            if (xmlFinalActualizado.substring(i, i + 4) === '<w:p') {
+              const charAfter = xmlFinalActualizado.charAt(i + 4)
+              if (charAfter === ' ' || charAfter === '>') {
+                paraStart = i
+                break
+              }
+            }
+          }
+          const paraEnd = xmlFinalActualizado.indexOf('</w:p>', placeholderIndex2)
+          if (paraStart > -1 && paraEnd > -1) {
+            const antes = xmlFinalActualizado.substring(0, paraStart)
+            const despues = xmlFinalActualizado.substring(paraEnd + 6)
+            xmlFinalActualizado = antes + tablaDidacticaXML + despues
+            zipAfterRender.file('word/document.xml', xmlFinalActualizado)
+            xmlFinal = xmlFinalActualizado
+          }
+        } else {
+          // Buscar también el texto literal que aparece en el documento
+          const placeholderIndex3 = xmlFinalActualizado.indexOf('TABLA_DIDACTICA_PLACEHOLDER')
+          if (placeholderIndex3 > -1) {
+            let paraStart = -1
+            for (let i = placeholderIndex3; i >= 0; i--) {
+              if (xmlFinalActualizado.substring(i, i + 4) === '<w:p') {
+                const charAfter = xmlFinalActualizado.charAt(i + 4)
+                if (charAfter === ' ' || charAfter === '>') {
+                  paraStart = i
+                  break
+                }
+              }
+            }
+            const paraEnd = xmlFinalActualizado.indexOf('</w:p>', placeholderIndex3)
+            if (paraStart > -1 && paraEnd > -1) {
+              const antes = xmlFinalActualizado.substring(0, paraStart)
+              const despues = xmlFinalActualizado.substring(paraEnd + 6)
+              xmlFinalActualizado = antes + tablaDidacticaXML + despues
+              zipAfterRender.file('word/document.xml', xmlFinalActualizado)
+              xmlFinal = xmlFinalActualizado
+            }
+          }
+        }
       }
 
       // IMPORTANTE: Asegurar que el zip tenga el XML actualizado (con la tabla didáctica si se insertó)
@@ -2173,6 +2582,145 @@ export async function POST(request: NextRequest) {
       const unidadNombre = formData.unidad || '0'
       const fileName = `UNIDAD_${unidadNombre}_${areaNombre}_${gradoNombre}_${Date.now()}.docx`
 
+      // ===== GUARDAR EN BD DESPUÉS DE GENERAR EL DOCUMENTO =====
+      // Solo guardar si tenemos los datos necesarios
+      // Obtener userId nuevamente para asegurar que esté disponible
+      const userIdParaGuardar = await getUserId(request)
+      const unidadParaGuardar = formData.unidad
+      const areaIdParaGuardar = formData.areaId || (formData.area && typeof formData.area === 'string' ? formData.area.split('|')[0] : formData.area)
+      const gradoIdParaGuardar = formData.gradoId || (formData.grado && typeof formData.grado === 'string' ? formData.grado.split('|')[0] : formData.grado)
+      const anioParaGuardar = formData.anio || new Date().getFullYear()
+      
+      if (unidadParaGuardar && areaIdParaGuardar && gradoIdParaGuardar && userIdParaGuardar) {
+        try {
+          // Obtener el plan anual relacionado si existe
+          let idplananual = null
+          const planAnualRelacionado = await prisma.planAnual.findFirst({
+            where: {
+              idusuario: userIdParaGuardar,
+              anio: parseInt(String(anioParaGuardar)),
+              areaId: String(areaIdParaGuardar),
+              gradoId: String(gradoIdParaGuardar)
+            },
+            select: { id: true }
+          })
+          if (planAnualRelacionado) {
+            idplananual = planAnualRelacionado.id
+          }
+
+          // Buscar si ya existe una unidad de aprendizaje
+          const unidadExistente = await prisma.unidadAprendizaje.findFirst({
+            where: {
+              idusuario: userIdParaGuardar,
+              anio: parseInt(String(anioParaGuardar)),
+              areaId: String(areaIdParaGuardar),
+              gradoId: String(gradoIdParaGuardar),
+              unidad: String(unidadParaGuardar)
+            }
+          })
+
+          // Preparar datos para guardar: NUNCA usar formData.sesiones del payload (viene mal desde el cliente).
+          // Solo usar sesiones que vienen del flujo de generación: sesionesGuardadas reparadas o extraídas de la IA.
+          const sesionesRaw = (typeof sesionesGeneradasPorIA !== 'undefined' && sesionesGeneradasPorIA.length > 0)
+            ? JSON.parse(JSON.stringify(sesionesGeneradasPorIA))
+            : null
+          // Reparar: unir ítems cuando el siguiente empieza en minúscula (cortados por coma)
+          const repararListaCortadaPorComa = (arr: string[]): string[] => {
+            if (!Array.isArray(arr) || arr.length <= 1) return arr
+            const out: string[] = []
+            let i = 0
+            while (i < arr.length) {
+              let item = (arr[i] || '').trim()
+              while (i + 1 < arr.length) {
+                const next = (arr[i + 1] || '').trim()
+                if (/^[a-záéíóúñ]/.test(next)) {
+                  item = item + ', ' + next
+                  i++
+                } else break
+              }
+              if (item) out.push(item)
+              i++
+            }
+            return out
+          }
+          const sesionesParaGuardar = sesionesRaw && Array.isArray(sesionesRaw)
+            ? sesionesRaw.map((s: any) => ({
+                ...s,
+                competenciasSeleccionadas: repararListaCortadaPorComa(s.competenciasSeleccionadas || []),
+                capacidadesSeleccionadas: repararListaCortadaPorComa(s.capacidadesSeleccionadas || []),
+                desempeniosSeleccionados: repararListaCortadaPorComa(s.desempeniosSeleccionados || [])
+              }))
+            : null
+          
+          // Preparar competencias y estándares para guardar como JSON
+          // competenciasArray contiene: { competencianro, competenciadescripcion, estandares }
+          const competenciasYEstándares = competenciasArray.length > 0 
+            ? JSON.parse(JSON.stringify(competenciasArray))
+            : null
+
+          // Preparar enfoques transversales para guardar como JSON (lo generado por la IA)
+          const enfoquesParaGuardar = enfoquesGeneradosParaBD
+
+          // Prisma: solo incluir sesiones cuando tenemos data del flujo de generación (nunca del payload del cliente).
+          const datosComunes = {
+            anio: parseInt(String(anioParaGuardar)),
+            fechaHora: new Date(),
+            area: formData.area || null,
+            areaId: areaIdParaGuardar || null,
+            grado: formData.grado || null,
+            gradoId: gradoIdParaGuardar || null,
+            ciclo: formData.ciclo || null,
+            cicloId: formData.cicloId || null,
+            unidad: unidadParaGuardar || null,
+            institucion: formData.institucion || null,
+            tipoIE: formData.tipoIE || null,
+            director: formData.director || null,
+            docente: formData.docente || null,
+            duracion: formData.duracion || null,
+            fechaInicio: formData.fechaInicio || null,
+            fechaTermino: formData.fechaTermino || null,
+            situacionSignificativa: formData.situacionSignificativa || null,
+            producto: formData.producto || null,
+            tituloUnidad: tituloUnidad || null,
+            propositoUnidad: formData.propositoUnidad || null,
+            competencias: competenciasYEstándares,
+            campoTematico: formData.campoTematico || null,
+            numeroSesiones: formData.numeroSesiones || null,
+            instrumentoEvaluacion: formData.instrumentoEvaluacion || null,
+            ...(sesionesParaGuardar !== null && { sesiones: sesionesParaGuardar }),
+            enfoquesTransversales: enfoquesParaGuardar,
+            variablesTemplate: {
+              aiProvider: formData.aiProvider || 'openai',
+              openaiModel: formData.openaiModel || 'gpt-5-mini'
+            },
+            idplananual: idplananual
+          }
+
+          // Guardar o actualizar en la base de datos
+          if (unidadExistente) {
+            await prisma.unidadAprendizaje.update({
+              where: { id: unidadExistente.id },
+              data: {
+                ...datosComunes,
+                usuario: { connect: { id: userIdParaGuardar } }
+              }
+            })
+            console.log('✅ Unidad de aprendizaje actualizada en BD')
+          } else {
+            await prisma.unidadAprendizaje.create({
+              data: {
+                ...datosComunes,
+                idusuario: userIdParaGuardar
+              }
+            })
+            console.log('✅ Unidad de aprendizaje guardada en BD')
+          }
+        } catch (saveError: any) {
+          // No fallar la generación del documento si hay error al guardar
+          console.error('❌ Error al guardar unidad de aprendizaje en BD:', saveError)
+        }
+      }
+
       // Devolver el archivo como respuesta
       return new NextResponse(Buffer.from(buf), {
         status: 200,
@@ -2182,7 +2730,6 @@ export async function POST(request: NextRequest) {
           'Content-Length': buf.length.toString(),
         },
       })
-      
     } catch (error: any) {
       let errorMessage = 'Error al procesar la plantilla Word'
       let errorDetails = ''

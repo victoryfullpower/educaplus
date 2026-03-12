@@ -89,6 +89,10 @@ export default function UnidadesAprendizajePage() {
   
   // Estados para el modal de selección de competencias/desempeños por sesión
   const [showModalSesion, setShowModalSesion] = useState(false)
+  
+  // Estados para el modal de opciones de generación
+  const [showModalGeneracion, setShowModalGeneracion] = useState(false)
+  const [tieneDatosGuardados, setTieneDatosGuardados] = useState(false)
   const [sesionModalIndex, setSesionModalIndex] = useState<number | null>(null)
   const [competenciasSeleccionadasModal, setCompetenciasSeleccionadasModal] = useState<string[]>([])
   const [capacidadesSeleccionadasModal, setCapacidadesSeleccionadasModal] = useState<string[]>([])
@@ -158,13 +162,72 @@ export default function UnidadesAprendizajePage() {
     loadCompetencias()
   }, [formData.areaId, formData.gradoId])
 
-  // Cargar datos de la unidad desde plan anual cuando cambien unidad, área o grado
+  // Cargar datos de la unidad guardada desde la BD cuando cambien unidad, área o grado
   useEffect(() => {
-    const loadDatosUnidad = async () => {
+    const loadUnidadAprendizajeGuardada = async () => {
       if (formData.unidad && formData.areaId && formData.gradoId) {
         try {
           setLoadingDatosUnidad(true)
           const anio = new Date().getFullYear()
+          
+          // Primero intentar cargar desde unidad de aprendizaje guardada
+          const responseUnidad = await fetch(
+            `/api/unidad-aprendizaje?anio=${anio}&areaId=${formData.areaId}&gradoId=${formData.gradoId}&unidad=${formData.unidad}`
+          )
+          
+          if (responseUnidad.ok) {
+            const dataUnidad = await responseUnidad.json()
+            const unidadGuardada = dataUnidad.unidadesAprendizaje?.[0]
+            
+            if (unidadGuardada) {
+              console.log('📦 Cargando unidad de aprendizaje guardada:', unidadGuardada)
+              
+              // Setear todos los datos del formData
+              setFormData(prev => ({
+                ...prev,
+                // Datos básicos
+                area: unidadGuardada.area || prev.area,
+                areaId: unidadGuardada.areaId || prev.areaId,
+                grado: unidadGuardada.grado || prev.grado,
+                gradoId: unidadGuardada.gradoId || prev.gradoId,
+                ciclo: unidadGuardada.ciclo || prev.ciclo,
+                cicloId: unidadGuardada.cicloId || prev.cicloId,
+                unidad: unidadGuardada.unidad || prev.unidad,
+                // Datos institucionales
+                institucion: unidadGuardada.institucion || prev.institucion,
+                tipoIE: unidadGuardada.tipoIE || prev.tipoIE,
+                director: unidadGuardada.director || prev.director,
+                docente: unidadGuardada.docente || prev.docente,
+                duracion: unidadGuardada.duracion || prev.duracion,
+                // Datos temporales
+                fechaInicio: unidadGuardada.fechaInicio || prev.fechaInicio,
+                fechaTermino: unidadGuardada.fechaTermino || prev.fechaTermino,
+                // Datos de contenido
+                situacionSignificativa: unidadGuardada.situacionSignificativa || prev.situacionSignificativa,
+                producto: unidadGuardada.producto || prev.producto,
+                propositoUnidad: unidadGuardada.propositoUnidad || prev.propositoUnidad,
+                competencias: Array.isArray(unidadGuardada.competencias) ? unidadGuardada.competencias : prev.competencias,
+                campoTematico: unidadGuardada.campoTematico || prev.campoTematico,
+                numeroSesiones: unidadGuardada.numeroSesiones || prev.numeroSesiones,
+                instrumentoEvaluacion: unidadGuardada.instrumentoEvaluacion || prev.instrumentoEvaluacion,
+                // Sesiones
+                sesiones: Array.isArray(unidadGuardada.sesiones) ? unidadGuardada.sesiones : prev.sesiones
+              }))
+              
+              // También actualizar datos desde plan anual si hay título
+              if (unidadGuardada.tituloUnidad) {
+                setDatosDesdePlanAnual({
+                  situacionSignificativa: unidadGuardada.situacionSignificativa,
+                  producto: unidadGuardada.producto,
+                  tituloUnidad: unidadGuardada.tituloUnidad
+                })
+              }
+              
+              return // Salir temprano si encontramos datos guardados
+            }
+          }
+          
+          // Si no hay datos guardados, intentar cargar desde plan anual (fallback)
           const response = await fetch(
             `/api/unidades-aprendizaje/datos-unidad?unidad=${formData.unidad}&areaId=${formData.areaId}&gradoId=${formData.gradoId}&anio=${anio}`
           )
@@ -198,7 +261,7 @@ export default function UnidadesAprendizajePage() {
       }
     }
 
-    loadDatosUnidad()
+    loadUnidadAprendizajeGuardada()
   }, [formData.unidad, formData.areaId, formData.gradoId])
 
   // Calcular número de sesiones basado en semanas y sesionx2
@@ -447,22 +510,76 @@ export default function UnidadesAprendizajePage() {
   const handleFinalSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
 
+    console.log('🔵 [MODAL] handleFinalSubmit llamado')
+    console.log('🔵 [MODAL] formData:', { unidad: formData.unidad, areaId: formData.areaId, gradoId: formData.gradoId })
+
+    // Verificar si hay datos guardados antes de mostrar el modal
+    try {
+      if (formData.unidad && formData.areaId && formData.gradoId) {
+        const anio = formData.anio || new Date().getFullYear()
+        const url = `/api/unidad-aprendizaje?anio=${anio}&areaId=${formData.areaId}&gradoId=${formData.gradoId}&unidad=${formData.unidad}`
+        console.log('🔵 [MODAL] Consultando:', url)
+        
+        const checkResponse = await fetch(url)
+        
+        console.log('🔵 [MODAL] Respuesta status:', checkResponse.status, 'ok:', checkResponse.ok)
+        
+        if (checkResponse.ok) {
+          const responseData = await checkResponse.json()
+          console.log('🔵 [MODAL] Datos recibidos:', responseData)
+          
+          // La API puede devolver {unidadesAprendizaje: [...]} o un objeto directo
+          let unidadData = null
+          if (responseData.unidadesAprendizaje && Array.isArray(responseData.unidadesAprendizaje) && responseData.unidadesAprendizaje.length > 0) {
+            unidadData = responseData.unidadesAprendizaje[0]
+            console.log('🔵 [MODAL] Registro encontrado en array:', unidadData)
+          } else if (responseData.id) {
+            unidadData = responseData
+            console.log('🔵 [MODAL] Registro encontrado como objeto directo:', unidadData)
+          }
+          
+          console.log('🔵 [MODAL] Tiene sesiones?', !!unidadData?.sesiones)
+          
+          // Si existe un registro, mostrar el modal SIEMPRE
+          if (unidadData && unidadData.id) {
+            console.log('🟢 [MODAL] REGISTRO ENCONTRADO - Mostrando modal')
+            setTieneDatosGuardados(true)
+            setShowModalGeneracion(true)
+            return // No continuar, esperar la decisión del usuario
+          } else {
+            console.log('🔴 [MODAL] No se encontró registro válido')
+          }
+        } else {
+          console.log('🔴 [MODAL] Respuesta no OK:', checkResponse.status)
+        }
+      } else {
+        console.log('🔴 [MODAL] Faltan datos:', { unidad: formData.unidad, areaId: formData.areaId, gradoId: formData.gradoId })
+      }
+    } catch (error) {
+      console.error('🔴 [MODAL] Error:', error)
+      // Si hay error al verificar, continuar con generación normal
+    }
+
+    console.log('🔴 [MODAL] Generando directamente sin modal')
+    // Si no hay datos guardados, generar directamente
+    generarDocumento(false)
+  }
+
+  const generarDocumento = async (forzarRegeneracion: boolean) => {
+    setShowModalGeneracion(false)
     setLoading(true)
     
     try {
-      console.log('📤 Enviando solicitud para generar documento...', {
-        gradoId: formData.gradoId,
-        unidad: formData.unidad,
-        area: formData.area
-      })
-
       const response = await fetch('/api/unidades-aprendizaje/generate-document', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          formData: formData
+          formData: {
+            ...formData,
+            forzarRegeneracion: forzarRegeneracion
+          }
         }),
       })
 
@@ -1334,6 +1451,89 @@ export default function UnidadesAprendizajePage() {
             </form>
           )}
         </div>
+
+        {/* Modal de opciones de generación */}
+        {showModalGeneracion && (
+          <div style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(0, 0, 0, 0.5)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000
+          }} onClick={() => setShowModalGeneracion(false)}>
+            <div style={{
+              backgroundColor: 'white',
+              padding: '30px',
+              borderRadius: '12px',
+              maxWidth: '500px',
+              width: '90%',
+              boxShadow: '0 4px 20px rgba(0, 0, 0, 0.3)'
+            }} onClick={(e) => e.stopPropagation()}>
+              <h3 style={{
+                marginTop: 0,
+                marginBottom: '15px',
+                color: '#0066cc',
+                fontSize: '24px'
+              }}>Opciones de Generación</h3>
+              <p style={{
+                marginBottom: '25px',
+                color: '#666',
+                lineHeight: '1.6'
+              }}>
+                Se encontraron datos guardados para esta unidad. ¿Qué deseas hacer?
+              </p>
+              
+              <div style={{
+                display: 'flex',
+                gap: '10px',
+                marginBottom: '15px',
+                flexDirection: 'column'
+              }}>
+                <button
+                  className={styles.button}
+                  onClick={() => generarDocumento(false)}
+                  style={{
+                    width: '100%',
+                    padding: '12px 20px',
+                    fontSize: '16px',
+                    fontWeight: 600
+                  }}
+                >
+                  📦 Generar lo guardado
+                </button>
+                <button
+                  className={styles.buttonSecondary}
+                  onClick={() => generarDocumento(true)}
+                  style={{
+                    width: '100%',
+                    padding: '12px 20px',
+                    fontSize: '16px',
+                    fontWeight: 600
+                  }}
+                >
+                  🔄 Generar nuevamente
+                </button>
+              </div>
+              
+              <button
+                className={styles.buttonSecondary}
+                onClick={() => setShowModalGeneracion(false)}
+                style={{
+                  width: '100%',
+                  padding: '10px 20px',
+                  fontSize: '14px'
+                }}
+              >
+                Cancelar
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Modal de selección de Competencias y Desempeños por Sesión */}
         {showModalSesion && sesionModalIndex !== null && (

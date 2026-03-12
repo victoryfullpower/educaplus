@@ -9,9 +9,16 @@ interface Area {
   descripcion: string
 }
 
+interface Ciclo {
+  id: number // Prisma mapea idciclo como id en el modelo
+  descripcion: string
+}
+
 interface Grado {
   id: number
   descripcion: string | null
+  idciclo: number
+  ciclo: Ciclo
 }
 
 interface Competencia {
@@ -56,15 +63,35 @@ export default function SesionesFichasPage() {
     areaId: '',
     grado: '',
     gradoId: '',
+    ciclo: '',
+    cicloId: '',
+    unidad: '',
     institucion: '',
+    director: '',
     docente: '',
+    duracion: '',
+    fecha: '',
     competenciaSeleccionada: '',
     capacidadSeleccionada: '',
     desempeniosSeleccionados: [] as string[],
     tituloSesion: '',
-    continuarUnidad: false
+    continuarUnidad: false,
+    sesionSeleccionada: ''
   })
+  const [sesionesGuardadas, setSesionesGuardadas] = useState<Array<{
+    titulo: string
+    campoTematico?: string
+    competenciasSeleccionadas: string[]
+    capacidadesSeleccionadas: string[]
+    desempeniosSeleccionados: string[]
+    evidencias?: string
+    criterios?: string
+    instrumentoEvaluacion: string
+  }>>([])
+  const [loadingSesiones, setLoadingSesiones] = useState(false)
   const [loading, setLoading] = useState(false)
+  const [loadingPrompt, setLoadingPrompt] = useState(false)
+  const [loadingRespuestaPrompt, setLoadingRespuestaPrompt] = useState(false)
   const [tipoGenerar, setTipoGenerar] = useState('')
   const [areas, setAreas] = useState<Area[]>([])
   const [grados, setGrados] = useState<Grado[]>([])
@@ -74,6 +101,18 @@ export default function SesionesFichasPage() {
   const [loadingData, setLoadingData] = useState(true)
   const [loadingCapacidades, setLoadingCapacidades] = useState(false)
   const [loadingDesempenios, setLoadingDesempenios] = useState(false)
+  const [tableTextFromPrompt, setTableTextFromPrompt] = useState<string>('')
+  const [showModalGeneracion, setShowModalGeneracion] = useState(false)
+  const [contenidoGuardado, setContenidoGuardado] = useState<{
+    motivacion: string
+    saberes: string
+    problematizacion: string
+    proposito: string
+    desarrollo: string
+    desarrolloantes: string
+    desarrollodurante: string
+    desarrollodespues: string
+  } | null>(null)
 
   // Cargar datos iniciales
   useEffect(() => {
@@ -189,6 +228,157 @@ export default function SesionesFichasPage() {
     loadDesempenios()
   }, [formData.capacidadSeleccionada])
 
+  // Cargar sesiones guardadas cuando se seleccione área, grado y unidad
+  useEffect(() => {
+    const loadSesionesGuardadas = async () => {
+      if (formData.continuarUnidad && formData.areaId && formData.gradoId && formData.unidad) {
+        try {
+          setLoadingSesiones(true)
+          const anio = new Date().getFullYear()
+          
+          const response = await fetch(
+            `/api/unidad-aprendizaje?anio=${anio}&areaId=${formData.areaId}&gradoId=${formData.gradoId}&unidad=${formData.unidad}`
+          )
+          
+          if (response.ok) {
+            const data = await response.json()
+            
+            let unidadData = null
+            
+            if (data && Array.isArray(data.unidadesAprendizaje) && data.unidadesAprendizaje.length > 0) {
+              unidadData = data.unidadesAprendizaje[0]
+            } else if (data && data.id) {
+              unidadData = data
+            }
+            
+            if (unidadData && unidadData.sesiones && Array.isArray(unidadData.sesiones)) {
+              // Filtrar sesiones que tengan datos válidos
+              const sesionesConDatos = unidadData.sesiones.filter((s: any) => 
+                s && (s.titulo || (Array.isArray(s.competenciasSeleccionadas) && s.competenciasSeleccionadas.length > 0))
+              )
+              setSesionesGuardadas(sesionesConDatos)
+            } else {
+              setSesionesGuardadas([])
+            }
+          } else {
+            setSesionesGuardadas([])
+          }
+        } catch (error) {
+          console.error('Error al cargar sesiones guardadas:', error)
+          setSesionesGuardadas([])
+        } finally {
+          setLoadingSesiones(false)
+        }
+      } else {
+        setSesionesGuardadas([])
+      }
+    }
+
+    loadSesionesGuardadas()
+  }, [formData.continuarUnidad, formData.areaId, formData.gradoId, formData.unidad])
+
+  // Cargar datos de la sesión seleccionada
+  useEffect(() => {
+    if (formData.continuarUnidad && formData.sesionSeleccionada && sesionesGuardadas.length > 0) {
+      const sesionIndex = parseInt(formData.sesionSeleccionada, 10)
+      const sesion = sesionesGuardadas[sesionIndex]
+      
+      if (sesion) {
+        // Las sesiones guardadas tienen descripciones, no IDs
+        // Necesitamos buscar los IDs correspondientes a las descripciones
+        const buscarIdCompetencia = async (descripcionCompetencia: string) => {
+          if (!descripcionCompetencia || !formData.areaId || !formData.gradoId) return ''
+          
+          try {
+            const response = await fetch(
+              `/api/competencias/competencias?idarea=${formData.areaId}&idgrado=${formData.gradoId}`
+            )
+            const competenciasData = await response.json()
+            const competenciaEncontrada = competenciasData.find((c: Competencia) => 
+              c.descripcion === descripcionCompetencia || c.descripcion.includes(descripcionCompetencia) || descripcionCompetencia.includes(c.descripcion)
+            )
+            return competenciaEncontrada ? competenciaEncontrada.id.toString() : ''
+          } catch (error) {
+            console.error('[SESIONES] Error al buscar competencia:', error)
+            return ''
+          }
+        }
+        
+        const buscarIdCapacidad = async (descripcionCapacidad: string, idcompetencia: string) => {
+          if (!descripcionCapacidad || !idcompetencia) return ''
+          
+          try {
+            const response = await fetch(
+              `/api/competencias/capacidades?idcompetencia=${idcompetencia}`
+            )
+            const capacidadesData = await response.json()
+            const capacidadEncontrada = capacidadesData.find((c: Capacidad) => 
+              c.descripcion === descripcionCapacidad || c.descripcion.includes(descripcionCapacidad) || descripcionCapacidad.includes(c.descripcion)
+            )
+            return capacidadEncontrada ? capacidadEncontrada.id.toString() : ''
+          } catch (error) {
+            console.error('[SESIONES] Error al buscar capacidad:', error)
+            return ''
+          }
+        }
+        
+        const buscarIdsDesempenios = async (descripcionesDesempenios: string[], idcapacidad: string) => {
+          if (!descripcionesDesempenios || descripcionesDesempenios.length === 0 || !idcapacidad) return []
+          
+          try {
+            const response = await fetch(
+              `/api/competencias/desempenios?idcapacidad=${idcapacidad}`
+            )
+            const desempeniosData = await response.json()
+            const idsEncontrados: string[] = []
+            
+            descripcionesDesempenios.forEach((desc: string) => {
+              const desempenioEncontrado = desempeniosData.find((d: Desempenio) => 
+                d.descripcion === desc || d.descripcion.includes(desc) || desc.includes(d.descripcion)
+              )
+              if (desempenioEncontrado) {
+                idsEncontrados.push(desempenioEncontrado.id.toString())
+              }
+            })
+            
+            return idsEncontrados
+          } catch (error) {
+            console.error('[SESIONES] Error al buscar desempeños:', error)
+            return []
+          }
+        }
+        
+        // Cargar los datos de la sesión seleccionada
+        const cargarDatosSesion = async () => {
+          const primeraCompetencia = sesion.competenciasSeleccionadas && sesion.competenciasSeleccionadas.length > 0 
+            ? sesion.competenciasSeleccionadas[0] 
+            : ''
+          
+          const primeraCapacidad = sesion.capacidadesSeleccionadas && sesion.capacidadesSeleccionadas.length > 0
+            ? sesion.capacidadesSeleccionadas[0]
+            : ''
+          
+          // Buscar IDs
+          const idCompetencia = await buscarIdCompetencia(primeraCompetencia)
+          const idCapacidad = idCompetencia ? await buscarIdCapacidad(primeraCapacidad, idCompetencia) : ''
+          const idsDesempenios = idCapacidad && sesion.desempeniosSeleccionados 
+            ? await buscarIdsDesempenios(sesion.desempeniosSeleccionados, idCapacidad)
+            : []
+          
+          setFormData(prev => ({
+            ...prev,
+            tituloSesion: sesion.titulo || '',
+            competenciaSeleccionada: idCompetencia,
+            capacidadSeleccionada: idCapacidad,
+            desempeniosSeleccionados: idsDesempenios
+          }))
+        }
+        
+        cargarDatosSesion()
+      }
+    }
+  }, [formData.sesionSeleccionada, sesionesGuardadas, formData.continuarUnidad, formData.areaId, formData.gradoId])
+
   const handleFase1Submit = (e: React.FormEvent) => {
     e.preventDefault()
     if (formData.areaId && formData.gradoId) {
@@ -196,7 +386,83 @@ export default function SesionesFichasPage() {
     }
   }
 
-  const handleFase2Submit = (e: React.FormEvent) => {
+  const numeroSesionActual = formData.continuarUnidad && formData.sesionSeleccionada
+    ? parseInt(formData.sesionSeleccionada, 10) + 1
+    : 1
+
+  const generarDocumento = async (usarContenidoBD: boolean) => {
+    setShowModalGeneracion(false)
+    setLoading(true)
+    try {
+      let sesionData = null
+      let unidadData = null
+      if (formData.continuarUnidad && formData.sesionSeleccionada && sesionesGuardadas.length > 0) {
+        const sesionIndex = parseInt(formData.sesionSeleccionada, 10)
+        const sesion = sesionesGuardadas[sesionIndex]
+        if (sesion) {
+          sesionData = {
+            numeroSesion: (sesionIndex + 1).toString(),
+            titulo: sesion.titulo || '',
+            competenciasSeleccionadas: sesion.competenciasSeleccionadas || [],
+            capacidadesSeleccionadas: sesion.capacidadesSeleccionadas || [],
+            desempeniosSeleccionados: sesion.desempeniosSeleccionados || [],
+            campoTematico: sesion.campoTematico || '',
+            evidencias: sesion.evidencias || '',
+            criterios: sesion.criterios || ''
+          }
+          unidadData = { areaId: formData.areaId, gradoId: formData.gradoId, unidad: formData.unidad }
+        }
+      }
+      const body: Record<string, unknown> = {
+        formData: {
+          institucion: formData.institucion,
+          area: formData.area,
+          grado: formData.grado,
+          gradoId: formData.gradoId,
+          areaId: formData.areaId,
+          unidad: formData.unidad,
+          ciclo: formData.ciclo,
+          director: formData.director,
+          docente: formData.docente,
+          fecha: formData.fecha,
+          duracion: formData.duracion,
+          tituloSesion: formData.tituloSesion,
+          continuarUnidad: formData.continuarUnidad
+        },
+        sesionData,
+        unidadData,
+        tableTextFromPrompt: tableTextFromPrompt || undefined
+      }
+      if (usarContenidoBD && contenidoGuardado) {
+        body.contenidoDesdeBD = contenidoGuardado
+      }
+      const response = await fetch('/api/sesiones-fichas/generate-document', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      })
+      if (!response.ok) {
+        const error = await response.json()
+        throw new Error(error.error || 'Error al generar el documento')
+      }
+      const blob = await response.blob()
+      const url = window.URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `SESION_${formData.area || 'documento'}_${Date.now()}.docx`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      window.URL.revokeObjectURL(url)
+    } catch (error) {
+      console.error('Error al generar documento:', error)
+      alert(error instanceof Error ? error.message : 'Error al generar el documento. Por favor intenta de nuevo.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleFase2Submit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!formData.continuarUnidad) {
       if (!formData.competenciaSeleccionada || !formData.capacidadSeleccionada) {
@@ -207,21 +473,178 @@ export default function SesionesFichasPage() {
         alert('Por favor selecciona al menos un desempeño')
         return
       }
+    } else {
+      if (!formData.sesionSeleccionada) {
+        alert('Por favor selecciona una sesión')
+        return
+      }
     }
-    setFase(3)
+    try {
+      const params = new URLSearchParams({
+        areaId: String(formData.areaId || ''),
+        gradoId: String(formData.gradoId || ''),
+        unidad: String(formData.unidad || ''),
+        numeroSesion: String(numeroSesionActual)
+      })
+      const checkRes = await fetch(`/api/sesiones-fichas/sesion-contenido?${params}`)
+      if (checkRes.ok) {
+        const data = await checkRes.json()
+        if (data.existe && data.contenido) {
+          setContenidoGuardado(data.contenido)
+          setShowModalGeneracion(true)
+          return
+        }
+      }
+    } catch (_) {
+      // Si falla la consulta, continuar y generar con IA
+    }
+    generarDocumento(false)
   }
 
-  const handleFinalSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!tipoGenerar) {
-      alert('Por favor selecciona qué deseas generar')
-      return
+  const handlePromptDinamico = async () => {
+    setLoadingPrompt(true)
+    try {
+      let sesionData = null
+      if (formData.continuarUnidad && formData.sesionSeleccionada && sesionesGuardadas.length > 0) {
+        const sesionIndex = parseInt(formData.sesionSeleccionada, 10)
+        const sesion = sesionesGuardadas[sesionIndex]
+        if (sesion) {
+          sesionData = {
+            numeroSesion: (sesionIndex + 1).toString(),
+            titulo: sesion.titulo || '',
+            competenciasSeleccionadas: sesion.competenciasSeleccionadas || [],
+            capacidadesSeleccionadas: sesion.capacidadesSeleccionadas || [],
+            desempeniosSeleccionados: sesion.desempeniosSeleccionados || []
+          }
+        }
+      } else {
+        sesionData = { numeroSesion: '1', titulo: formData.tituloSesion || '', competenciasSeleccionadas: [], capacidadesSeleccionadas: [], desempeniosSeleccionados: [] }
+      }
+      const response = await fetch('/api/sesiones-fichas/generate-prompt-document', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          formData: {
+            area: formData.area,
+            grado: formData.grado,
+            ciclo: formData.ciclo,
+            duracion: formData.duracion,
+            tituloSesion: formData.tituloSesion,
+            areaId: formData.areaId,
+            gradoId: formData.gradoId,
+            unidad: formData.unidad
+          },
+          sesionData
+        })
+      })
+      if (!response.ok) {
+        const err = await response.json()
+        throw new Error(err.error || 'Error al generar el prompt')
+      }
+      const blob = await response.blob()
+      const url = window.URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `Prompt_Sesion_${formData.area || 'documento'}_${Date.now()}.docx`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      window.URL.revokeObjectURL(url)
+    } catch (error) {
+      console.error('Error al generar prompt:', error)
+      alert(error instanceof Error ? error.message : 'Error al generar el documento de prompt.')
+    } finally {
+      setLoadingPrompt(false)
     }
-    setLoading(true)
-    setTimeout(() => {
-      setLoading(false)
-      alert(`Generando ${tipoGenerar}... Esta funcionalidad se conectará con la API de IA.`)
-    }, 1000)
+  }
+
+  const handleRespuestaPrompt = async () => {
+    setLoadingRespuestaPrompt(true)
+    try {
+      let sesionData = null
+      if (formData.continuarUnidad && formData.sesionSeleccionada && sesionesGuardadas.length > 0) {
+        const sesionIndex = parseInt(formData.sesionSeleccionada, 10)
+        const sesion = sesionesGuardadas[sesionIndex]
+        if (sesion) {
+          sesionData = {
+            numeroSesion: (sesionIndex + 1).toString(),
+            titulo: sesion.titulo || '',
+            competenciasSeleccionadas: sesion.competenciasSeleccionadas || [],
+            capacidadesSeleccionadas: sesion.capacidadesSeleccionadas || [],
+            desempeniosSeleccionados: sesion.desempeniosSeleccionados || []
+          }
+        }
+      } else {
+        sesionData = { numeroSesion: '1', titulo: formData.tituloSesion || '', competenciasSeleccionadas: [], capacidadesSeleccionadas: [], desempeniosSeleccionados: [] }
+      }
+      const response = await fetch('/api/sesiones-fichas/respuesta-prompt', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          formData: {
+            area: formData.area,
+            grado: formData.grado,
+            ciclo: formData.ciclo,
+            duracion: formData.duracion,
+            tituloSesion: formData.tituloSesion,
+            areaId: formData.areaId,
+            gradoId: formData.gradoId,
+            unidad: formData.unidad
+          },
+          sesionData,
+          includePreviewImage: true
+        })
+      })
+      if (!response.ok) {
+        const err = await response.json()
+        throw new Error(err.error || 'Error al generar la respuesta del prompt')
+      }
+      const contentType = response.headers.get('Content-Type') || ''
+      if (contentType.includes('application/json')) {
+        const data = await response.json()
+        if (data.tableText) setTableTextFromPrompt(data.tableText)
+        const ts = Date.now()
+        const baseName = `Respuesta_Prompt_Sesion_${(formData.area || 'documento').replace(/\s+/g, '_')}_${ts}`.replace(/[^a-zA-Z0-9_.-]/g, '')
+        const docxName = data.fileNameDocx || `${baseName}.docx`
+        const imageName = data.fileNameImage || `${baseName}_vista_previa.svg`
+        const docxBuf = Uint8Array.from(atob(data.docxBase64), (c) => c.charCodeAt(0))
+        const imageBuf = Uint8Array.from(atob(data.imageBase64), (c) => c.charCodeAt(0))
+        const mimeImage = data.mimeImage || 'image/svg+xml'
+        const blobDocx = new Blob([docxBuf], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' })
+        const blobImage = new Blob([imageBuf], { type: mimeImage })
+        const urlDocx = window.URL.createObjectURL(blobDocx)
+        const urlImage = window.URL.createObjectURL(blobImage)
+        const a1 = document.createElement('a')
+        a1.href = urlDocx
+        a1.download = docxName
+        document.body.appendChild(a1)
+        a1.click()
+        document.body.removeChild(a1)
+        window.URL.revokeObjectURL(urlDocx)
+        const a2 = document.createElement('a')
+        a2.href = urlImage
+        a2.download = imageName
+        document.body.appendChild(a2)
+        a2.click()
+        document.body.removeChild(a2)
+        window.URL.revokeObjectURL(urlImage)
+      } else {
+        const blob = await response.blob()
+        const url = window.URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = `Respuesta_Prompt_Sesion_${formData.area || 'documento'}_${Date.now()}.docx`
+        document.body.appendChild(a)
+        a.click()
+        document.body.removeChild(a)
+        window.URL.revokeObjectURL(url)
+      }
+    } catch (error) {
+      console.error('Error al generar respuesta prompt:', error)
+      alert(error instanceof Error ? error.message : 'Error al generar la respuesta del prompt.')
+    } finally {
+      setLoadingRespuestaPrompt(false)
+    }
   }
 
   return (
@@ -229,7 +652,7 @@ export default function SesionesFichasPage() {
       <Header />
       <main className={styles.main}>
         <div className={styles.container}>
-          <h1 className={styles.title}>CREAR SESIONES, RÚBRICAS Y FICHAS</h1>
+          <h1 className={styles.title}>CREAR SESIONES</h1>
           <p className={styles.subtitle}>
             Genera sesiones completas con fichas y rúbricas en 3 fases
           </p>
@@ -239,11 +662,8 @@ export default function SesionesFichasPage() {
             <div className={`${styles.progressSegment} ${fase >= 1 ? styles.completed : ''}`}>
               Fase 1
             </div>
-            <div className={`${styles.progressSegment} ${fase >= 2 ? (fase === 2 ? styles.active : styles.completed) : ''}`}>
+            <div className={`${styles.progressSegment} ${fase >= 2 ? styles.active : ''}`}>
               Fase 2
-            </div>
-            <div className={`${styles.progressSegment} ${fase >= 3 ? styles.active : ''}`}>
-              Fase 3
             </div>
           </div>
 
@@ -289,7 +709,9 @@ export default function SesionesFichasPage() {
                       setFormData({ 
                         ...formData, 
                         grado: selectedGrado?.descripcion || '', 
-                        gradoId: e.target.value 
+                        gradoId: e.target.value,
+                        ciclo: selectedGrado?.ciclo?.descripcion || '',
+                        cicloId: selectedGrado?.ciclo?.id.toString() || ''
                       })
                     }}
                     className={styles.select}
@@ -306,6 +728,24 @@ export default function SesionesFichasPage() {
                 </div>
 
                 <div className={styles.formGroup}>
+                  <label htmlFor="ciclo">Ciclo</label>
+                  <select
+                    id="ciclo"
+                    value={formData.cicloId}
+                    className={styles.select}
+                    disabled
+                  >
+                    {formData.cicloId && (
+                      <option value={formData.cicloId}>{formData.ciclo}</option>
+                    )}
+                    {!formData.cicloId && (
+                      <option value="">Selecciona un grado primero</option>
+                    )}
+                  </select>
+                  <p className={styles.helpText}>El ciclo se selecciona automáticamente según el grado</p>
+                </div>
+
+                <div className={styles.formGroup}>
                   <label htmlFor="institucion">Nombre de la Institución Educativa (Opcional)</label>
                   <input
                     id="institucion"
@@ -314,6 +754,18 @@ export default function SesionesFichasPage() {
                     onChange={(e) => setFormData({ ...formData, institucion: e.target.value })}
                     className={styles.input}
                     placeholder="Nombre de tu I.E."
+                  />
+                </div>
+
+                <div className={styles.formGroup}>
+                  <label htmlFor="director">Director (Opcional)</label>
+                  <input
+                    id="director"
+                    type="text"
+                    value={formData.director}
+                    onChange={(e) => setFormData({ ...formData, director: e.target.value })}
+                    className={styles.input}
+                    placeholder="Nombre del director"
                   />
                 </div>
 
@@ -327,6 +779,45 @@ export default function SesionesFichasPage() {
                     className={styles.input}
                     placeholder="Tu nombre"
                   />
+                </div>
+
+                <div className={styles.formGroup}>
+                  <label htmlFor="duracion">Duración (Opcional)</label>
+                  <select
+                    id="duracion"
+                    value={formData.duracion}
+                    onChange={(e) => setFormData({ ...formData, duracion: e.target.value })}
+                    className={styles.select}
+                  >
+                    <option value="">Selecciona la duración</option>
+                    <option value="45">45 minutos</option>
+                    <option value="90">90 minutos</option>
+                    <option value="135">135 minutos</option>
+                  </select>
+                </div>
+
+                <div className={styles.formGroup}>
+                  <label htmlFor="fecha">Fecha (Opcional)</label>
+                  <input
+                    id="fecha"
+                    type="date"
+                    value={formData.fecha}
+                    onChange={(e) => setFormData({ ...formData, fecha: e.target.value })}
+                    className={styles.input}
+                  />
+                </div>
+
+                <div className={styles.formGroup}>
+                  <label htmlFor="unidad">Unidad (Opcional)</label>
+                  <input
+                    id="unidad"
+                    type="text"
+                    value={formData.unidad}
+                    onChange={(e) => setFormData({ ...formData, unidad: e.target.value })}
+                    className={styles.input}
+                    placeholder="Número de unidad (ej: 1, 2, 3...)"
+                  />
+                  <p className={styles.helpText}>Necesario si deseas continuar con una unidad ya generada</p>
                 </div>
               </div>
 
@@ -346,12 +837,88 @@ export default function SesionesFichasPage() {
                   <input
                     type="checkbox"
                     checked={formData.continuarUnidad}
-                    onChange={(e) => setFormData({ ...formData, continuarUnidad: e.target.checked })}
+                    onChange={(e) => {
+                      setFormData({ 
+                        ...formData, 
+                        continuarUnidad: e.target.checked,
+                        sesionSeleccionada: e.target.checked ? formData.sesionSeleccionada : ''
+                      })
+                    }}
                     className={styles.checkbox}
                   />
                   Continuar con secuencia de una unidad ya generada
                 </label>
               </div>
+
+              {formData.continuarUnidad && (
+                <div className={styles.formGroup}>
+                  <label htmlFor="sesionSeleccionada">Seleccionar Sesión <span className={styles.required}>*</span></label>
+                  <p className={styles.helpText}>
+                    {loadingSesiones 
+                      ? 'Cargando sesiones guardadas...'
+                      : sesionesGuardadas.length === 0
+                      ? formData.areaId && formData.gradoId && formData.unidad
+                        ? 'No se encontraron sesiones guardadas para esta unidad. Asegúrate de haber generado la unidad de aprendizaje primero.'
+                        : 'Selecciona área, grado y unidad en la Fase 1 para cargar las sesiones guardadas.'
+                      : `Se encontraron ${sesionesGuardadas.length} sesión(es) guardada(s).`}
+                  </p>
+                  <select
+                    id="sesionSeleccionada"
+                    value={formData.sesionSeleccionada}
+                    onChange={(e) => setFormData({ ...formData, sesionSeleccionada: e.target.value })}
+                    className={styles.select}
+                    required={formData.continuarUnidad}
+                    disabled={loadingSesiones || sesionesGuardadas.length === 0 || !formData.areaId || !formData.gradoId || !formData.unidad}
+                    style={{ 
+                      display: 'block',
+                      width: '100%',
+                      padding: '8px',
+                      fontSize: '16px',
+                      border: '1px solid #ccc',
+                      borderRadius: '4px'
+                    }}
+                  >
+                    <option value="">Selecciona una sesión</option>
+                    {sesionesGuardadas.length > 0 ? (
+                      sesionesGuardadas.map((sesion, index) => (
+                        <option key={index} value={index.toString()}>
+                          Sesión {index + 1}: {sesion.titulo || 'Sin título'}
+                        </option>
+                      ))
+                    ) : (
+                      <option value="" disabled>No hay sesiones disponibles</option>
+                    )}
+                  </select>
+                  {formData.sesionSeleccionada && sesionesGuardadas[parseInt(formData.sesionSeleccionada, 10)] && (
+                    <div style={{ marginTop: '10px', padding: '10px', backgroundColor: '#f0f9ff', borderRadius: '6px', border: '1px solid #bfdbfe' }}>
+                      <strong style={{ color: '#1e40af' }}>Datos de la sesión seleccionada:</strong>
+                      <ul style={{ marginTop: '8px', paddingLeft: '20px', listStyle: 'disc' }}>
+                        <li style={{ marginBottom: '4px' }}>
+                          <strong>Título:</strong> {sesionesGuardadas[parseInt(formData.sesionSeleccionada, 10)].titulo || 'Sin título'}
+                        </li>
+                        {sesionesGuardadas[parseInt(formData.sesionSeleccionada, 10)].competenciasSeleccionadas && 
+                         sesionesGuardadas[parseInt(formData.sesionSeleccionada, 10)].competenciasSeleccionadas.length > 0 && (
+                          <li style={{ marginBottom: '4px' }}>
+                            <strong>Competencias:</strong> {sesionesGuardadas[parseInt(formData.sesionSeleccionada, 10)].competenciasSeleccionadas.length} seleccionada(s)
+                          </li>
+                        )}
+                        {sesionesGuardadas[parseInt(formData.sesionSeleccionada, 10)].capacidadesSeleccionadas && 
+                         sesionesGuardadas[parseInt(formData.sesionSeleccionada, 10)].capacidadesSeleccionadas.length > 0 && (
+                          <li style={{ marginBottom: '4px' }}>
+                            <strong>Capacidades:</strong> {sesionesGuardadas[parseInt(formData.sesionSeleccionada, 10)].capacidadesSeleccionadas.length} seleccionada(s)
+                          </li>
+                        )}
+                        {sesionesGuardadas[parseInt(formData.sesionSeleccionada, 10)].desempeniosSeleccionados && 
+                         sesionesGuardadas[parseInt(formData.sesionSeleccionada, 10)].desempeniosSeleccionados.length > 0 && (
+                          <li style={{ marginBottom: '4px' }}>
+                            <strong>Desempeños:</strong> {sesionesGuardadas[parseInt(formData.sesionSeleccionada, 10)].desempeniosSeleccionados.length} seleccionado(s)
+                          </li>
+                        )}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              )}
 
               {!formData.continuarUnidad && (
                 <>
@@ -547,75 +1114,95 @@ export default function SesionesFichasPage() {
                 >
                   Volver a Fase 1
                 </button>
-                <button type="submit" className={styles.button}>Continuar a Fase 3</button>
-              </div>
-            </form>
-          )}
-
-          {fase === 3 && (
-            <form onSubmit={handleFinalSubmit} className={styles.form}>
-              <h2 className={styles.phaseTitle}>FASE 3: Generación</h2>
-              <p className={styles.phaseDescription}>
-                Selecciona qué deseas generar:
-              </p>
-
-              <div className={styles.generationOptions}>
                 <button
                   type="button"
-                  onClick={() => setTipoGenerar('sesion')}
-                  className={`${styles.optionButton} ${tipoGenerar === 'sesion' ? styles.selected : ''}`}
-                >
-                  Generar Sesión
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setTipoGenerar('ficha')}
-                  className={`${styles.optionButton} ${tipoGenerar === 'ficha' ? styles.selected : ''}`}
-                >
-                  Generar Ficha
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setTipoGenerar('rubrica')}
-                  className={`${styles.optionButton} ${tipoGenerar === 'rubrica' ? styles.selected : ''}`}
-                >
-                  Generar Rúbrica
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setTipoGenerar('ficha-refuerzo')}
-                  className={`${styles.optionButton} ${tipoGenerar === 'ficha-refuerzo' ? styles.selected : ''}`}
-                >
-                  Generar Ficha de Refuerzo
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setTipoGenerar('ficha-discapacidad')}
-                  className={`${styles.optionButton} ${tipoGenerar === 'ficha-discapacidad' ? styles.selected : ''}`}
-                >
-                  Generar Ficha para Estudiantes con Discapacidad
-                </button>
-              </div>
-
-              <div className={styles.noteBox}>
-                <p>✨ <strong>¡Listo!</strong> Has completado las 3 fases. Tu sesión y sus recursos están listos para transformar tu aula.</p>
-              </div>
-
-              <div className={styles.buttonGroup}>
-                <button
-                  type="button"
-                  onClick={() => setFase(2)}
+                  onClick={handlePromptDinamico}
                   className={styles.buttonSecondary}
+                  disabled={loadingPrompt || !formData.duracion}
+                  title={!formData.duracion ? 'Selecciona duración en Fase 1' : ''}
                 >
-                  Volver a Fase 2
+                  {loadingPrompt ? 'Descargando...' : 'Prompt dinámico'}
                 </button>
-                <button type="submit" className={styles.button} disabled={loading || !tipoGenerar}>
-                  {loading ? 'Generando...' : `Generar ${tipoGenerar || 'material'}`}
+                <button
+                  type="button"
+                  onClick={handleRespuestaPrompt}
+                  className={styles.buttonSecondary}
+                  disabled={loadingRespuestaPrompt || !formData.duracion}
+                  title={!formData.duracion ? 'Selecciona duración en Fase 1' : ''}
+                >
+                  {loadingRespuestaPrompt ? 'Generando...' : 'Respuesta prompt'}
+                </button>
+                <button type="submit" className={styles.button} disabled={loading}>
+                  {loading ? 'Generando...' : 'Generar documento'}
                 </button>
               </div>
             </form>
           )}
         </div>
+
+        {/* Modal: actualizar o traer de la BD (igual que unidad aprendizaje) */}
+        {showModalGeneracion && (
+          <div
+            style={{
+              position: 'fixed',
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              backgroundColor: 'rgba(0, 0, 0, 0.5)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              zIndex: 1000
+            }}
+            onClick={() => setShowModalGeneracion(false)}
+          >
+            <div
+              style={{
+                backgroundColor: 'white',
+                padding: '30px',
+                borderRadius: '12px',
+                maxWidth: '500px',
+                width: '90%',
+                boxShadow: '0 4px 20px rgba(0, 0, 0, 0.3)'
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <h3 style={{ marginTop: 0, marginBottom: '15px', color: '#0066cc', fontSize: '24px' }}>
+                Opciones de generación
+              </h3>
+              <p style={{ marginBottom: '25px', color: '#666', lineHeight: '1.6' }}>
+                Hay datos guardados para esta sesión. ¿Qué deseas hacer?
+              </p>
+              <div style={{ display: 'flex', gap: '10px', marginBottom: '15px', flexDirection: 'column' }}>
+                <button
+                  type="button"
+                  className={styles.button}
+                  onClick={() => generarDocumento(true)}
+                  style={{ width: '100%', padding: '12px 20px', fontSize: '16px', fontWeight: 600 }}
+                >
+                  📦 Generar lo guardado
+                </button>
+                <button
+                  type="button"
+                  className={styles.buttonSecondary}
+                  onClick={() => generarDocumento(false)}
+                  style={{ width: '100%', padding: '12px 20px', fontSize: '16px', fontWeight: 600 }}
+                >
+                  🔄 Generar nuevamente
+                </button>
+              </div>
+              <button
+                type="button"
+                className={styles.buttonSecondary}
+                onClick={() => setShowModalGeneracion(false)}
+                style={{ width: '100%', padding: '10px 20px', fontSize: '14px' }}
+              >
+                Cancelar
+              </button>
+            </div>
+          </div>
+        )}
       </main>
     </>
   )

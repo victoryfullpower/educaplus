@@ -9,7 +9,8 @@
     "start": "next start",
     "lint": "eslint",
     "postinstall": "prisma generate",
-    "import:excel": "tsx scripts/import-excel.ts"
+    "import:excel": "tsx scripts/import-excel.ts",
+    "seed:procesodidactico": "tsx prisma/seed-procesodidactico.ts"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
