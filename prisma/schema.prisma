@@ -350,6 +350,25 @@ model Prompt {
   @@map("prompt")
 }
 
+model AreaComercial {
+  idareacomercial Int      @id @default(autoincrement()) @map("idareacomercial")
+  descripcion     String
+  areaIds         Json     @map("area_ids") // Array de IDs de Area, ej: [1,2,3,4]
+  estado          String   @default("activo") // "activo" o "inactivo"
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  @@map("areacomercial")
+}
+
+model TipoVenta {
+  id          Int    @id @default(autoincrement())
+  descripcion String
+  estado      String @default("activo") // "activo" o "inactivo"
+
+  @@map("tipoventa")
+}
+
 model EnfoqueTransversal {
   idenfoque      Int       @id @default(autoincrement()) @map("idenfoque")
   descripcion    String

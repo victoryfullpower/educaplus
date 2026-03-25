@@ -87,6 +87,22 @@ export default function PanelLayout({
               </li>
               <li>
                 <Link 
+                  href="/paneladministracion/areas-comerciales" 
+                  className={`${styles.navLink} ${pathname === '/paneladministracion/areas-comerciales' ? styles.navLinkActive : ''}`}
+                >
+                  🧩 Áreas Comerciales
+                </Link>
+              </li>
+              <li>
+                <Link 
+                  href="/paneladministracion/tipos-venta" 
+                  className={`${styles.navLink} ${pathname === '/paneladministracion/tipos-venta' ? styles.navLinkActive : ''}`}
+                >
+                  🏷️ Tipos de venta
+                </Link>
+              </li>
+              <li>
+                <Link 
                   href="/paneladministracion/niveles" 
                   className={`${styles.navLink} ${pathname === '/paneladministracion/niveles' ? styles.navLinkActive : ''}`}
                 >

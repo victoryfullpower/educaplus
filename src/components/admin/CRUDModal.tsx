@@ -6,7 +6,7 @@ import styles from './CRUDModal.module.css'
 interface Field {
   key: string
   label: string
-  type: 'text' | 'number' | 'email' | 'password' | 'textarea' | 'select' | 'checkbox'
+  type: 'text' | 'number' | 'email' | 'password' | 'textarea' | 'select' | 'checkbox' | 'multiselect'
   required?: boolean
   options?: { value: string | number; label: string }[]
   placeholder?: string
@@ -53,7 +53,15 @@ export default function CRUDModal({
   const validate = () => {
     const newErrors: Record<string, string> = {}
     fields.forEach((field) => {
-      if (field.required && !formData[field.key]) {
+      if (!field.required) return
+      if (field.type === 'multiselect') {
+        const v = formData[field.key]
+        if (!Array.isArray(v) || v.length === 0) {
+          newErrors[field.key] = `${field.label} es requerido`
+        }
+        return
+      }
+      if (!formData[field.key]) {
         newErrors[field.key] = `${field.label} es requerido`
       }
     })
@@ -87,7 +95,16 @@ export default function CRUDModal({
 
         <form onSubmit={handleSubmit} className={styles.form}>
           {fields.map((field) => (
-            <div key={field.key} className={field.type === 'checkbox' ? styles.fieldCheckbox : styles.field}>
+            <div
+              key={field.key}
+              className={
+                field.type === 'checkbox'
+                  ? styles.fieldCheckbox
+                  : field.type === 'multiselect'
+                    ? styles.fieldMultiselect
+                    : styles.field
+              }
+            >
               {field.type === 'checkbox' ? (
                 <>
                   <input
@@ -132,6 +149,36 @@ export default function CRUDModal({
                         </option>
                       ))}
                     </select>
+                  ) : field.type === 'multiselect' ? (
+                    <div className={styles.multiselectList}>
+                      {field.options && field.options.length > 0 ? (
+                        field.options.map((opt) => {
+                          const id = Number(opt.value)
+                          const selected: number[] = Array.isArray(formData[field.key])
+                            ? formData[field.key]
+                            : []
+                          const checked = selected.includes(id)
+                          return (
+                            <label key={opt.value} className={styles.multiselectOption}>
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={() => {
+                                  const next = checked
+                                    ? selected.filter((x) => x !== id)
+                                    : [...selected, id]
+                                  handleChange(field.key, next)
+                                }}
+                                disabled={field.disabled}
+                              />
+                              <span>{opt.label}</span>
+                            </label>
+                          )
+                        })
+                      ) : (
+                        <span className={styles.multiselectEmpty}>No hay opciones disponibles</span>
+                      )}
+                    </div>
                   ) : (
                     <input
                       type={field.type}
