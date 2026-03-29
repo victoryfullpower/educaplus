@@ -52,19 +52,20 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    if (!idcapacidadtransversal) {
-      return NextResponse.json(
-        { error: 'idcapacidadtransversal es requerido' },
-        { status: 400 }
-      )
+    const data: {
+      descripcion: string
+      idcomtransversal: number
+      idcapacidadtransversal?: number
+    } = {
+      descripcion,
+      idcomtransversal: parseInt(String(idcomtransversal), 10)
+    }
+    if (idcapacidadtransversal != null && String(idcapacidadtransversal).trim() !== '') {
+      data.idcapacidadtransversal = parseInt(String(idcapacidadtransversal), 10)
     }
 
     const capacidadtransversal = await prisma.capacidadtransversal.create({
-      data: {
-        idcapacidadtransversal: parseInt(idcapacidadtransversal),
-        descripcion,
-        idcomtransversal: parseInt(idcomtransversal)
-      },
+      data,
       include: {
         comptransversal: {
           include: {

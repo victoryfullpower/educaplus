@@ -30,7 +30,7 @@ model Area {
 }
 
 model ProcesoDidactico {
-  idproceso          Int    @id @map("idproceso")
+  idproceso          Int    @id @default(autoincrement()) @map("idproceso")
   descripcion        String
   competenciaProceso Json   @map("competencia_proceso") // array de strings: competencias del proceso
   idarea             Int    @map("idarea")
@@ -48,7 +48,7 @@ model Nivel {
 }
 
 model Ciclo {
-  id          Int     @id @map("idciclo")
+  id          Int     @id @default(autoincrement()) @map("idciclo")
   descripcion String
   grados      Grado[]
 
@@ -67,7 +67,7 @@ model Grado {
 }
 
 model Comptransversal {
-  idcomtransversal       Int                    @id @map("idcomtransversal")
+  idcomtransversal       Int                    @id @default(autoincrement()) @map("idcomtransversal")
   descripcion            String
   idgrado                Int
   grado                  Grado                  @relation(fields: [idgrado], references: [id])
@@ -77,7 +77,7 @@ model Comptransversal {
 }
 
 model Capacidadtransversal {
-  idcapacidadtransversal Int             @id @map("idcapacidadtransversal")
+  idcapacidadtransversal Int             @id @default(autoincrement()) @map("idcapacidadtransversal")
   descripcion            String
   idcomtransversal       Int
   comptransversal        Comptransversal @relation(fields: [idcomtransversal], references: [idcomtransversal])
@@ -87,7 +87,7 @@ model Capacidadtransversal {
 }
 
 model Desempeniotransversal {
-  iddesempeniotransversal Int    @id @map("iddesempeniotransversal")
+  iddesempeniotransversal Int    @id @default(autoincrement()) @map("iddesempeniotransversal")
   descripcion             String
   idcapacidadtransversal  Int
   capacidadtransversal    Capacidadtransversal @relation(fields: [idcapacidadtransversal], references: [idcapacidadtransversal])
@@ -152,9 +152,9 @@ model PlanAnual {
 
   // Datos de Fase 1
   area         String?
-  areaId       String? @map("area_id")
+  areaId       String  @default("") @map("area_id")
   grado        String?
-  gradoId      String? @map("grado_id")
+  gradoId      String  @default("") @map("grado_id")
   institucion  String?
   docente      String?
   dre          String?
@@ -162,7 +162,7 @@ model PlanAnual {
   director     String?
   coordinador  String?
   nivel        String?
-  nivelId      String? @map("nivel_id")
+  nivelId      String  @default("") @map("nivel_id")
   departamento String?
   provincia    String?
   distrito     String?
@@ -177,7 +177,7 @@ model PlanAnual {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  @@unique([idusuario, anio])
+  @@unique([idusuario, anio, areaId, nivelId, gradoId], name: "plananual_usuario_anio_area_nivel_grado")
   @@map("plananual")
 }
 

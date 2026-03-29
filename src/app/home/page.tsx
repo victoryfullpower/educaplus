@@ -85,17 +85,26 @@ export default function HomePage() {
       <div className={styles.container}>
         <div className={styles.header}>
           <h1 className={styles.title}>Mis Documentos Generados</h1>
+          <Link
+            href="/servicios/crear-material/programacion-anual"
+            className={styles.newPlanButton}
+          >
+            ➕ Nuevo plan anual
+          </Link>
         </div>
         <div className={styles.content}>
           {anios.length === 0 ? (
             <div className={styles.card}>
               <h2>No hay documentos generados</h2>
               <p style={{ marginTop: '20px', color: '#666', lineHeight: '1.6' }}>
-                Aún no has generado ningún plan anual. 
-                <Link href="/servicios/crear-material/programacion-anual" style={{ color: '#667eea', marginLeft: '8px', textDecoration: 'underline' }}>
-                  Crea tu primer plan anual aquí
-                </Link>
+                Aún no has generado ningún plan anual.
               </p>
+              <Link
+                href="/servicios/crear-material/programacion-anual"
+                className={styles.newPlanButtonCard}
+              >
+                ➕ Crear mi primer plan anual
+              </Link>
             </div>
           ) : (
             anios.map((anio) => (

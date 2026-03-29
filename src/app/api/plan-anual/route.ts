@@ -2,6 +2,11 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getUserId } from '@/lib/auth'
 
+function normalizePlanIdField(v: unknown): string {
+  if (v === undefined || v === null || v === '') return ''
+  return String(v)
+}
+
 export async function POST(request: NextRequest) {
   try {
     const userId = await getUserId(request)
@@ -17,19 +22,77 @@ export async function POST(request: NextRequest) {
     const {
       formData, // Datos de Fase 1
       unidades, // Datos de Fase 2
-      variablesTemplate // Variables dinámicas del template
+      variablesTemplate, // Variables dinámicas del template
+      planAnualId,
+      anio: anioBody
     } = data
 
-    // Obtener el año actual
-    const anio = new Date().getFullYear()
+    const anio =
+      typeof anioBody === 'number'
+        ? anioBody
+        : typeof formData?.anio === 'number'
+          ? formData.anio
+          : new Date().getFullYear()
 
-    // Buscar si ya existe un plan anual para este usuario y año
-    const planExistente = await prisma.planAnual.findFirst({
-      where: {
-        idusuario: userId,
-        anio: anio
+    let planExistente = null as Awaited<ReturnType<typeof prisma.planAnual.findFirst>>
+
+    const idFromBody =
+      planAnualId !== undefined && planAnualId !== null && planAnualId !== ''
+        ? typeof planAnualId === 'number'
+          ? planAnualId
+          : parseInt(String(planAnualId), 10)
+        : NaN
+    const edicionPorId = Number.isFinite(idFromBody)
+
+    if (edicionPorId) {
+      planExistente = await prisma.planAnual.findFirst({
+        where: { id: idFromBody, idusuario: userId }
+      })
+      if (!planExistente) {
+        return NextResponse.json(
+          { error: 'Plan anual no encontrado', code: 'PLAN_NO_ENCONTRADO' },
+          { status: 404 }
+        )
       }
-    })
+    } else {
+      const areaIdBusq = normalizePlanIdField(formData?.areaId)
+      const nivelIdBusq = normalizePlanIdField(formData?.nivelId)
+      const gradoIdBusq = normalizePlanIdField(formData?.gradoId)
+      const duplicado = await prisma.planAnual.findFirst({
+        where: {
+          idusuario: userId,
+          anio,
+          areaId: areaIdBusq,
+          nivelId: nivelIdBusq,
+          gradoId: gradoIdBusq
+        }
+      })
+      if (duplicado) {
+        return NextResponse.json(
+          {
+            error:
+              'Ya existe un plan anual para este año con la misma área, nivel y grado. Ábrelo desde Inicio o elige otra combinación.',
+            code: 'PLAN_ANUAL_DUPLICADO',
+            planId: duplicado.id
+          },
+          { status: 409 }
+        )
+      }
+      planExistente = null
+    }
+
+    const areaIdGuardado =
+      formData?.areaId !== undefined
+        ? normalizePlanIdField(formData.areaId)
+        : normalizePlanIdField(planExistente?.areaId)
+    const nivelIdGuardado =
+      formData?.nivelId !== undefined
+        ? normalizePlanIdField(formData.nivelId)
+        : normalizePlanIdField(planExistente?.nivelId)
+    const gradoIdGuardado =
+      formData?.gradoId !== undefined
+        ? normalizePlanIdField(formData.gradoId)
+        : normalizePlanIdField(planExistente?.gradoId)
 
     // Preparar los datos a guardar
     const datosPlan: any = {
@@ -39,9 +102,9 @@ export async function POST(request: NextRequest) {
       
       // Datos de Fase 1 (siempre actualizar)
       area: formData?.area !== undefined ? formData.area : null,
-      areaId: formData?.areaId !== undefined ? formData.areaId : null,
+      areaId: areaIdGuardado,
       grado: formData?.grado !== undefined ? formData.grado : null,
-      gradoId: formData?.gradoId !== undefined ? formData.gradoId : null,
+      gradoId: gradoIdGuardado,
       institucion: formData?.institucion !== undefined ? formData.institucion : null,
       docente: formData?.docente !== undefined ? formData.docente : null,
       dre: formData?.dre !== undefined ? formData.dre : null,
@@ -49,7 +112,7 @@ export async function POST(request: NextRequest) {
       director: formData?.director !== undefined ? formData.director : null,
       coordinador: formData?.coordinador !== undefined ? formData.coordinador : null,
       nivel: formData?.nivel !== undefined ? formData.nivel : null,
-      nivelId: formData?.nivelId !== undefined ? formData.nivelId : null,
+      nivelId: nivelIdGuardado,
       departamento: formData?.departamento !== undefined ? formData.departamento : null,
       provincia: formData?.provincia !== undefined ? formData.provincia : null,
       distrito: formData?.distrito !== undefined ? formData.distrito : null
@@ -246,9 +309,15 @@ export async function PUT(request: NextRequest) {
       data: {
         // Datos de Fase 1
         area: formData?.area !== undefined ? formData.area : planExistente.area,
-        areaId: formData?.areaId !== undefined ? formData.areaId : planExistente.areaId,
+        areaId:
+          formData?.areaId !== undefined
+            ? normalizePlanIdField(formData.areaId)
+            : planExistente.areaId,
         grado: formData?.grado !== undefined ? formData.grado : planExistente.grado,
-        gradoId: formData?.gradoId !== undefined ? formData.gradoId : planExistente.gradoId,
+        gradoId:
+          formData?.gradoId !== undefined
+            ? normalizePlanIdField(formData.gradoId)
+            : planExistente.gradoId,
         institucion: formData?.institucion !== undefined ? formData.institucion : planExistente.institucion,
         docente: formData?.docente !== undefined ? formData.docente : planExistente.docente,
         dre: formData?.dre !== undefined ? formData.dre : planExistente.dre,
@@ -256,7 +325,10 @@ export async function PUT(request: NextRequest) {
         director: formData?.director !== undefined ? formData.director : planExistente.director,
         coordinador: formData?.coordinador !== undefined ? formData.coordinador : planExistente.coordinador,
         nivel: formData?.nivel !== undefined ? formData.nivel : planExistente.nivel,
-        nivelId: formData?.nivelId !== undefined ? formData.nivelId : planExistente.nivelId,
+        nivelId:
+          formData?.nivelId !== undefined
+            ? normalizePlanIdField(formData.nivelId)
+            : planExistente.nivelId,
         departamento: formData?.departamento !== undefined ? formData.departamento : planExistente.departamento,
         provincia: formData?.provincia !== undefined ? formData.provincia : planExistente.provincia,
         distrito: formData?.distrito !== undefined ? formData.distrito : planExistente.distrito,

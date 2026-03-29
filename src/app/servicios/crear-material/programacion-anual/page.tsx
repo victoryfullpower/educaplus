@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, Suspense } from 'react'
-import { useSearchParams } from 'next/navigation'
+import { useSearchParams, useRouter } from 'next/navigation'
 import Header from '@/components/Header'
 import { getDepartamentos, getProvinciasByDepartamento, getDistritosByProvincia } from '@/lib/ubigeos'
 import styles from './programacion-anual.module.css'
@@ -57,6 +57,7 @@ interface Unidad {
 }
 
 function ProgramacionAnualContent() {
+  const router = useRouter()
   const searchParams = useSearchParams()
   const planIdParam = searchParams.get('planId')
   
@@ -104,19 +105,9 @@ function ProgramacionAnualContent() {
               setPlanAnualExistente(planExistente)
             }
           }
-        } else {
-          // Si no hay planId, verificar si existe un plan anual para el año actual
-          const anio = new Date().getFullYear()
-          const planResponse = await fetch(`/api/plan-anual?anio=${anio}`)
-          
-          if (planResponse.ok) {
-            const planData = await planResponse.json()
-            if (planData.planesAnuales && planData.planesAnuales.length > 0) {
-              planExistente = planData.planesAnuales[0]
-              setPlanAnualExistente(planExistente)
-            }
-          }
         }
+        // Sin ?planId= no se precarga ningún plan: cada documento del home se edita por su id;
+        // un plan nuevo se crea al guardar Fase 1 (clave usuario + año + área + nivel + grado).
         
         // Cargar datos de Fase 1 desde el plan existente
         if (planExistente) {
@@ -229,6 +220,8 @@ function ProgramacionAnualContent() {
   const [aiProvider, setAiProvider] = useState<'gemini' | 'gpt-5.1' | 'gpt-5-mini' | 'gpt-5-nano'>('gpt-5-mini')
   const [progreso, setProgreso] = useState<string>('')
   const [showModal, setShowModal] = useState(false)
+  const [showModalPlanDuplicado, setShowModalPlanDuplicado] = useState(false)
+  const [planDuplicadoId, setPlanDuplicadoId] = useState<number | null>(null)
   const [camposFaltantes, setCamposFaltantes] = useState<string[]>([])
   
   // Estados para plan anual existente
@@ -274,20 +267,22 @@ function ProgramacionAnualContent() {
 
   const verificarPlanAnualExistente = async () => {
     try {
-      const anio = new Date().getFullYear()
-      const response = await fetch(`/api/plan-anual?anio=${anio}`)
-      
+      const idRaw = planAnualExistente?.id ?? (planIdParam ? parseInt(planIdParam, 10) : NaN)
+      if (!Number.isFinite(idRaw)) {
+        return null
+      }
+      const response = await fetch(`/api/plan-anual?id=${idRaw}`)
+
       if (response.ok) {
         const data = await response.json()
-        if (data.planesAnuales && data.planesAnuales.length > 0) {
-          const plan = data.planesAnuales[0] // Tomar el más reciente
+        const plan = data.planAnual
+        if (plan) {
           setPlanAnualExistente(plan)
-          
-          // Cargar unidades existentes si las hay
+
           if (plan.unidades && Array.isArray(plan.unidades)) {
             setUnidadesExistentes(plan.unidades)
           }
-          
+
           return plan
         }
       }
@@ -300,8 +295,13 @@ function ProgramacionAnualContent() {
 
   const handleFase1Submit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (formData.areaId && formData.gradoId) {
+    if (formData.areaId && formData.gradoId && formData.nivelId) {
       try {
+        const anioPlan = planAnualExistente?.anio ?? new Date().getFullYear()
+        const planAnualIdEdit =
+          planAnualExistente?.id ??
+          (planIdParam ? parseInt(planIdParam, 10) : undefined)
+
         // Guardar/actualizar los datos de la Fase 1 en la BD
         const saveResponse = await fetch('/api/plan-anual', {
           method: 'POST',
@@ -309,22 +309,40 @@ function ProgramacionAnualContent() {
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
+            planAnualId:
+              planAnualIdEdit !== undefined && Number.isFinite(planAnualIdEdit)
+                ? planAnualIdEdit
+                : undefined,
+            anio: anioPlan,
             formData: formData,
             unidades: null, // En Fase 1 aún no hay unidades
             variablesTemplate: null
           }),
         })
 
+        if (saveResponse.status === 409) {
+          const errData = await saveResponse.json().catch(() => ({} as { code?: string; planId?: number }))
+          if (errData.code === 'PLAN_ANUAL_DUPLICADO') {
+            setPlanDuplicadoId(
+              typeof errData.planId === 'number' ? errData.planId : null
+            )
+            setShowModalPlanDuplicado(true)
+            return
+          }
+        }
+
         if (saveResponse.ok) {
           const saveData = await saveResponse.json()
           console.log('✅ Datos de Fase 1 guardados/actualizados:', saveData)
           
-          // Obtener el plan completo para tenerlo disponible
-          const planResponse = await fetch(`/api/plan-anual?anio=${new Date().getFullYear()}`)
-          if (planResponse.ok) {
+          const nuevoId = saveData.planAnual?.id
+          const planResponse = nuevoId
+            ? await fetch(`/api/plan-anual?id=${nuevoId}`)
+            : null
+          if (planResponse?.ok) {
             const planData = await planResponse.json()
-            if (planData.planesAnuales && planData.planesAnuales.length > 0) {
-              const plan = planData.planesAnuales[0]
+            const plan = planData.planAnual
+            if (plan) {
               setPlanAnualExistente(plan)
               
               // Si hay unidades existentes, cargarlas en el formulario
@@ -404,15 +422,16 @@ function ProgramacionAnualContent() {
           // Continuar a Fase 2 directamente (el modal se mostrará al generar el documento)
           setFase(2)
         } else {
-          console.error('Error al guardar datos de Fase 1')
-          // Continuar a Fase 2 de todas formas
-          setFase(2)
+          const errData = await saveResponse.json().catch(() => ({} as { error?: string }))
+          console.error('Error al guardar datos de Fase 1:', errData)
+          alert(errData.error || 'No se pudo guardar la Fase 1.')
         }
       } catch (error) {
         console.error('Error al guardar datos de Fase 1:', error)
-        // Continuar a Fase 2 de todas formas
-        setFase(2)
+        alert('Error de red al guardar. Intenta de nuevo.')
       }
+    } else {
+      alert('Selecciona área, nivel y grado para continuar.')
     }
   }
 
@@ -1217,7 +1236,9 @@ function ProgramacionAnualContent() {
           modoGeneracion: modo,
           unidadesParaGenerar: unidadesParaGenerar,
           datosExistentes: datosExistentes,
-          planAnualId: planAnualExistente?.id
+          planAnualId:
+            planAnualExistente?.id ??
+            (planIdParam ? parseInt(planIdParam, 10) : undefined)
         }),
       })
 
@@ -1257,13 +1278,15 @@ function ProgramacionAnualContent() {
       
       // Solo actualizar el estado del plan existente para reflejar los cambios
       try {
-        const anio = new Date().getFullYear()
-        const planResponse = await fetch(`/api/plan-anual?anio=${anio}`)
-        if (planResponse.ok) {
-          const planData = await planResponse.json()
-          if (planData.planesAnuales && planData.planesAnuales.length > 0) {
-            setPlanAnualExistente(planData.planesAnuales[0])
-            console.log('✅ Plan anual actualizado en el estado local')
+        const pid = planAnualExistente?.id
+        if (pid) {
+          const planResponse = await fetch(`/api/plan-anual?id=${pid}`)
+          if (planResponse.ok) {
+            const planData = await planResponse.json()
+            if (planData.planAnual) {
+              setPlanAnualExistente(planData.planAnual)
+              console.log('✅ Plan anual actualizado en el estado local')
+            }
           }
         }
       } catch (error) {
@@ -1405,8 +1428,8 @@ function ProgramacionAnualContent() {
   }
 
   const handleDownload = async () => {
-    if (!formData.areaId || !formData.gradoId) {
-      alert('Por favor completa los campos obligatorios (Área y Grado)')
+    if (!formData.areaId || !formData.gradoId || !formData.nivelId) {
+      alert('Por favor completa los campos obligatorios (Área, Nivel y Grado)')
       return
     }
 
@@ -1696,7 +1719,7 @@ function ProgramacionAnualContent() {
                   type="button"
                   onClick={handleDownload}
                   className={styles.buttonDownload}
-                  disabled={downloading || !formData.areaId || !formData.gradoId}
+                  disabled={downloading || !formData.areaId || !formData.gradoId || !formData.nivelId}
                 >
                   {downloading ? 'Generando documento...' : '📥 Descargar Plantilla'}
                 </button>
@@ -1769,23 +1792,21 @@ function ProgramacionAnualContent() {
 
                     {/* Selección de Competencias y Desempeños */}
                     <div className={styles.formGroup} style={{ borderTop: '2px solid #e0e0e0', paddingTop: '20px', marginTop: '20px' }}>
-                      {/* <h4 style={{ marginBottom: '15px', color: '#0066cc', fontSize: '16px' }}>Competencias y Desempeños</h4> */}
-                      
-                      {/* Botón oculto - ya no se muestra */}
-                      {/* <button
+                      <h4 style={{ marginBottom: '15px', color: '#0066cc', fontSize: '16px' }}>Competencias y desempeños</h4>
+
+                      <button
                         type="button"
                         onClick={() => abrirModalCompetencias(index)}
                         className={styles.button}
                         style={{ marginBottom: '15px', width: '100%' }}
                         disabled={competencias.length === 0}
                       >
-                        {unidad.competenciaSeleccionada || unidad.desempeniosSeleccionados.length > 0 
-                          ? '✏️ Editar Competencias y Desempeños' 
-                          : '➕ Seleccionar Competencias y Desempeños'}
-                      </button> */}
-                      
-                      {/* Mostrar competencias seleccionadas - OCULTO */}
-                      {false && (unidad.competenciasSeleccionadas?.length > 0 || unidad.competenciaSeleccionada) && (
+                        {unidad.competenciaSeleccionada || (unidad.desempeniosSeleccionados?.length ?? 0) > 0
+                          ? '✏️ Editar competencias y desempeños'
+                          : '➕ Seleccionar competencias y desempeños'}
+                      </button>
+
+                      {(unidad.competenciasSeleccionadas?.length > 0 || unidad.competenciaSeleccionada) && (
                         <div style={{ marginBottom: '15px', padding: '12px', backgroundColor: '#f0f9ff', borderRadius: '6px', border: '1px solid #bfdbfe' }}>
                           <strong style={{ color: '#1e40af', fontSize: '14px', display: 'block', marginBottom: '8px' }}>
                             Competencia{unidad.competenciasSeleccionadas?.length > 1 ? 's' : ''} seleccionada{unidad.competenciasSeleccionadas?.length > 1 ? 's' : ''}:
@@ -1867,9 +1888,8 @@ function ProgramacionAnualContent() {
                           ) : null}
                         </div>
                       )}
-                      
-                      {/* Mostrar desempeños seleccionados - OCULTO */}
-                      {false && unidad.desempeniosSeleccionados.length > 0 && (
+
+                      {(unidad.desempeniosSeleccionados?.length ?? 0) > 0 && (
                         <div style={{ padding: '12px', backgroundColor: '#f0fdf4', borderRadius: '6px', border: '1px solid #86efac' }}>
                           <strong style={{ color: '#166534', fontSize: '14px', display: 'block', marginBottom: '8px' }}>
                             Desempeños seleccionados ({unidad.desempeniosSeleccionados.length}/4):
@@ -1918,11 +1938,11 @@ function ProgramacionAnualContent() {
                           </ul>
                         </div>
                       )}
-                      
-                      {/* Mensaje oculto - ya no se muestra */}
-                      {false && (!unidad.competenciasSeleccionadas?.length && !unidad.competenciaSeleccionada) && unidad.desempeniosSeleccionados.length === 0 && (
+
+                      {(!unidad.competenciasSeleccionadas?.length && !unidad.competenciaSeleccionada) &&
+                        (unidad.desempeniosSeleccionados?.length ?? 0) === 0 && (
                         <p className={styles.helpText} style={{ color: '#666', fontStyle: 'italic', textAlign: 'center', padding: '20px' }}>
-                          Haz clic en el botón arriba para seleccionar competencias y desempeños
+                          Usa el botón de arriba para elegir competencias, capacidades y desempeños (en la UNIDAD 0 necesitas al menos un desempeño para generar).
                         </p>
                       )}
                     </div>
@@ -1969,6 +1989,101 @@ function ProgramacionAnualContent() {
           )}
         </div>
       </main>
+
+      {/* Plan anual duplicado (mismo usuario, año, área, nivel, grado) */}
+      {showModalPlanDuplicado && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(0, 0, 0, 0.5)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000
+          }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              setShowModalPlanDuplicado(false)
+            }
+          }}
+        >
+          <div
+            style={{
+              backgroundColor: 'white',
+              borderRadius: '8px',
+              padding: '24px',
+              maxWidth: '480px',
+              width: '90%',
+              boxShadow: '0 4px 6px rgba(0, 0, 0, 0.1)'
+            }}
+          >
+            <h2
+              style={{
+                marginTop: 0,
+                marginBottom: '16px',
+                color: '#b45309',
+                fontSize: '20px',
+                fontWeight: 600
+              }}
+            >
+              Plan anual ya existe
+            </h2>
+            <p style={{ marginBottom: '20px', color: '#444', fontSize: '15px', lineHeight: 1.5 }}>
+              Ya tienes un plan anual para este <strong>año</strong> con la misma{' '}
+              <strong>área</strong>, <strong>nivel</strong> y <strong>grado</strong>. No se puede crear otro duplicado.
+              Podés abrir el que ya existe o cambiar área, nivel o grado.
+            </p>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px', justifyContent: 'flex-end' }}>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowModalPlanDuplicado(false)
+                  setPlanDuplicadoId(null)
+                }}
+                style={{
+                  padding: '10px 18px',
+                  backgroundColor: '#e5e7eb',
+                  color: '#374151',
+                  border: 'none',
+                  borderRadius: '6px',
+                  cursor: 'pointer',
+                  fontSize: '14px',
+                  fontWeight: 500
+                }}
+              >
+                Cerrar
+              </button>
+              {planDuplicadoId != null && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowModalPlanDuplicado(false)
+                    router.push(
+                      `/servicios/crear-material/programacion-anual?planId=${planDuplicadoId}`
+                    )
+                  }}
+                  style={{
+                    padding: '10px 18px',
+                    backgroundColor: '#667eea',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '6px',
+                    cursor: 'pointer',
+                    fontSize: '14px',
+                    fontWeight: 600
+                  }}
+                >
+                  Abrir plan existente
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Modal de campos faltantes */}
       {showModal && (

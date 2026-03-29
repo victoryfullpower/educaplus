@@ -56,19 +56,20 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    if (!iddesempeniotransversal) {
-      return NextResponse.json(
-        { error: 'iddesempeniotransversal es requerido' },
-        { status: 400 }
-      )
+    const data: {
+      descripcion: string
+      idcapacidadtransversal: number
+      iddesempeniotransversal?: number
+    } = {
+      descripcion,
+      idcapacidadtransversal: parseInt(String(idcapacidadtransversal), 10)
+    }
+    if (iddesempeniotransversal != null && String(iddesempeniotransversal).trim() !== '') {
+      data.iddesempeniotransversal = parseInt(String(iddesempeniotransversal), 10)
     }
 
     const desempeniotransversal = await prisma.desempeniotransversal.create({
-      data: {
-        iddesempeniotransversal: parseInt(iddesempeniotransversal),
-        descripcion,
-        idcapacidadtransversal: parseInt(idcapacidadtransversal)
-      },
+      data,
       include: {
         capacidadtransversal: {
           include: {

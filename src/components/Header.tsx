@@ -66,11 +66,13 @@ export default function Header() {
     }, 200)
   }
 
+  const inicioHref = isAuthenticated ? '/home' : '/'
+
   return (
     <header className={styles.header}>
       <div className={styles.container}>
         <div className={styles.left}>
-          <Link href="/" className={styles.logo}>
+          <Link href={inicioHref} className={styles.logo}>
             <Image 
               src={logo} 
               alt="EducaPlus Logo" 
@@ -81,7 +83,7 @@ export default function Header() {
         </div>
         
         <nav className={styles.nav}>
-          <Link href="/" className={styles.navLink}>INICIO</Link>
+          <Link href={inicioHref} className={styles.navLink}>INICIO</Link>
           <Link href="/nosotros" className={styles.navLink}>NOSOTROS</Link>
           
           <div 

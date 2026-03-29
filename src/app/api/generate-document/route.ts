@@ -7,6 +7,11 @@ import { prisma } from '@/lib/prisma'
 import { generateSituacionSignificativa } from '@/lib/generate-situacion-significativa'
 import { getUserId } from '@/lib/auth'
 
+function normalizePlanIdField(v: unknown): string {
+  if (v === undefined || v === null || v === '') return ''
+  return String(v)
+}
+
 export const dynamic = 'force-dynamic'
 
 export async function POST(request: NextRequest) {
@@ -420,14 +425,44 @@ export async function POST(request: NextRequest) {
         const userId = await getUserId(request)
         if (userId) {
           const anio = new Date().getFullYear()
-          
-          // Buscar el plan anual existente
-          const planExistente = await prisma.planAnual.findFirst({
-            where: {
-              idusuario: userId,
-              anio: anio
+
+          let planExistente = null as Awaited<ReturnType<typeof prisma.planAnual.findFirst>>
+
+          if (planAnualId !== undefined && planAnualId !== null && planAnualId !== '') {
+            const pid =
+              typeof planAnualId === 'number' ? planAnualId : parseInt(String(planAnualId), 10)
+            if (!Number.isNaN(pid)) {
+              planExistente = await prisma.planAnual.findFirst({
+                where: { id: pid, idusuario: userId }
+              })
             }
-          })
+          }
+
+          if (!planExistente && formData) {
+            const aid = normalizePlanIdField(formData.areaId)
+            const nid = normalizePlanIdField(formData.nivelId)
+            const gid = normalizePlanIdField(formData.gradoId)
+            if (aid !== '' || nid !== '' || gid !== '') {
+              planExistente = await prisma.planAnual.findFirst({
+                where: {
+                  idusuario: userId,
+                  anio,
+                  areaId: aid,
+                  nivelId: nid,
+                  gradoId: gid
+                }
+              })
+            }
+          }
+
+          if (!planExistente) {
+            planExistente = await prisma.planAnual.findFirst({
+              where: {
+                idusuario: userId,
+                anio: anio
+              }
+            })
+          }
 
           if (planExistente) {
             // Construir el JSON de unidades usando directamente unidadesConDatosGenerados
