@@ -12,6 +12,116 @@ function normalizePlanIdField(v: unknown): string {
   return String(v)
 }
 
+function normalizeAreaKey(value: unknown): string {
+  return String(value ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9 ]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function extractGradeNumber(value: unknown): number | null {
+  const match = String(value ?? '').match(/([1-5])/)
+  if (!match) return null
+  const n = Number(match[1])
+  return n >= 1 && n <= 5 ? n : null
+}
+
+const AREA_FOLDER_MAP: Record<string, string> = {
+  COMUNICACION: 'COMUNICACIÓN 1° A 5°',
+  MATEMATICA: 'MATEMATICA 1° A 5°',
+  CYT: 'CYT 1° A 5°',
+  'CIENCIA Y TECNOLOGIA': 'CYT 1° A 5°',
+  'CIENCIA TECNOLOGIA': 'CYT 1° A 5°',
+  CCSS: 'CCSS 1° A 5°',
+  'CIENCIAS SOCIALES': 'CCSS 1° A 5°',
+  DPCC: 'DPCC 1° A 5°',
+  INGLES: 'INGLÉS 1° A 5°',
+  ARTE: 'ARTE 1° A 5',
+  FISICA: 'ED. FISICA 1° A 5°',
+  'EDUCACION FISICA': 'ED. FISICA 1° A 5°',
+  TUTORIA: 'TUTORÍA 1° A 5°',
+  RELIGION: 'RELIGIÓN 1° A 5°',
+  QUECHUA: 'QUECHUA 1° A 5°',
+  'EPT COMPUTACION': 'EPT COMPUTACIÓN 1° A 5°',
+  'EPT AGROPECUARIA': 'EPT AGROPECUARIA 1° A 5°',
+  'EPT EMPRENDIMIENTO': 'EPT EMPRENDIMIENTO 1° A 5°'
+}
+
+function resolveFolderByAreaKey(areaKey: string): string | null {
+  if (AREA_FOLDER_MAP[areaKey]) return AREA_FOLDER_MAP[areaKey]
+
+  // Fallback por coincidencias parciales para nombres como:
+  // "Ciencia y Tecnología (CYT)", "Educación Física", etc.
+  const contains = (token: string) => areaKey.includes(token)
+
+  if (contains('CYT') || contains('CIENCIA') || contains('TECNOLOGIA')) {
+    return 'CYT 1° A 5°'
+  }
+  if (contains('COMUNICACION')) return 'COMUNICACIÓN 1° A 5°'
+  if (contains('MATEMATICA')) return 'MATEMATICA 1° A 5°'
+  if (contains('CCSS') || contains('SOCIALES')) return 'CCSS 1° A 5°'
+  if (contains('DPCC')) return 'DPCC 1° A 5°'
+  if (contains('INGLES')) return 'INGLÉS 1° A 5°'
+  if (contains('ARTE')) return 'ARTE 1° A 5'
+  if (contains('FISICA')) return 'ED. FISICA 1° A 5°'
+  if (contains('TUTORIA')) return 'TUTORÍA 1° A 5°'
+  if (contains('RELIGION')) return 'RELIGIÓN 1° A 5°'
+  if (contains('QUECHUA')) return 'QUECHUA 1° A 5°'
+  if (contains('EPT') && contains('COMPUTACION')) return 'EPT COMPUTACIÓN 1° A 5°'
+  if (contains('EPT') && contains('AGROPECUARIA')) return 'EPT AGROPECUARIA 1° A 5°'
+  if (contains('EPT') && contains('EMPRENDIMIENTO')) return 'EPT EMPRENDIMIENTO 1° A 5°'
+
+  return null
+}
+
+function resolvePlanAnualTemplatePath(formData: any): string {
+  const defaultTemplate = path.join(
+    process.cwd(),
+    'templates',
+    '1-PLANIFICACIÓN CURRICULAR ANUAL.docx'
+  )
+
+  const areaKey = normalizeAreaKey(formData?.area)
+  const grade = extractGradeNumber(formData?.grado)
+  const folderName = resolveFolderByAreaKey(areaKey)
+
+  if (!folderName || !grade) {
+    console.warn('⚠️ [DEBUG] Plantilla fallback por área/grado no resuelto:', {
+      areaOriginal: formData?.area,
+      areaKey,
+      grade
+    })
+    return defaultTemplate
+  }
+
+  const folderPath = path.join(process.cwd(), 'templates', 'plananual', folderName)
+  if (!fs.existsSync(folderPath)) {
+    return defaultTemplate
+  }
+
+  const files = fs
+    .readdirSync(folderPath)
+    .filter((name) => name.toLowerCase().endsWith('.docx') && !name.startsWith('~$'))
+
+  const gradeToken = `${grade}°`
+  const templateByGrade = files.find((name) => name.includes(gradeToken))
+  if (templateByGrade) {
+    return path.join(folderPath, templateByGrade)
+  }
+
+  console.warn('⚠️ [DEBUG] Plantilla fallback por grado no encontrado en carpeta:', {
+    areaOriginal: formData?.area,
+    areaKey,
+    folderName,
+    grade,
+    gradeToken
+  })
+  return defaultTemplate
+}
+
 export const dynamic = 'force-dynamic'
 
 export async function POST(request: NextRequest) {
@@ -65,12 +175,9 @@ export async function POST(request: NextRequest) {
       console.log('⚠️ [DEBUG] No se recibieron datos existentes')
     }
 
-    // Ruta a la plantilla
-    const templatePath = path.join(
-      process.cwd(),
-      'templates',
-      '1-PLANIFICACIÓN CURRICULAR ANUAL.docx'
-    )
+    // Resolver plantilla (hardcoded por área y grado). Si no encuentra match, usa la plantilla general.
+    const templatePath = resolvePlanAnualTemplatePath(formData)
+    console.log('📄 [DEBUG] Plantilla seleccionada:', templatePath)
 
     // Verificar que la plantilla existe
     if (!fs.existsSync(templatePath)) {

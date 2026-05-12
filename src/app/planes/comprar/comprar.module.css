@@ -1,0 +1,90 @@
+.card {
+  background: rgba(255, 255, 255, 0.98);
+  border-radius: 16px;
+  padding: 32px 28px;
+  max-width: 520px;
+  margin: 0 auto;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.18);
+}
+
+.title {
+  margin: 0 0 16px;
+  font-size: 1.5rem;
+  font-weight: 800;
+  color: #1e1b4b;
+}
+
+.lead {
+  margin: 0 0 8px;
+  font-weight: 700;
+  color: #5b21b6;
+  font-size: 1.05rem;
+}
+
+.detail {
+  margin: 0 0 16px;
+  color: #64748b;
+  font-size: 0.95rem;
+}
+
+.price {
+  margin: 0 0 24px;
+  font-size: 1.35rem;
+  color: #0f172a;
+}
+
+.price strong {
+  color: #1e1b4b;
+}
+
+.error {
+  color: #b91c1c;
+  margin: 0;
+}
+
+.error a {
+  color: #7c3aed;
+  font-weight: 600;
+}
+
+.muted {
+  color: #64748b;
+  font-size: 0.9rem;
+}
+
+.box {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  align-items: flex-start;
+}
+
+.box p {
+  margin: 0;
+  color: #475569;
+  line-height: 1.5;
+}
+
+.pagoMsg {
+  font-size: 0.9rem !important;
+  padding: 12px 14px;
+  background: #f1f5f9;
+  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+}
+
+.linkAlt {
+  font-size: 0.9rem;
+  color: #7c3aed;
+  font-weight: 600;
+}
+
+.footer {
+  margin: 24px 0 0;
+  font-size: 0.9rem;
+}
+
+.footer a {
+  color: #5b21b6;
+  font-weight: 600;
+}

@@ -85,7 +85,10 @@ export default function Header() {
         <nav className={styles.nav}>
           <Link href={inicioHref} className={styles.navLink}>INICIO</Link>
           <Link href="/nosotros" className={styles.navLink}>NOSOTROS</Link>
-          
+          <Link href="/planes" className={styles.navLink}>
+            PLANES
+          </Link>
+
           <div 
             ref={dropdownRef}
             className={styles.dropdown}

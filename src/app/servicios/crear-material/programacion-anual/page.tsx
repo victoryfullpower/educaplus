@@ -221,6 +221,7 @@ function ProgramacionAnualContent() {
   const [progreso, setProgreso] = useState<string>('')
   const [showModal, setShowModal] = useState(false)
   const [showModalPlanDuplicado, setShowModalPlanDuplicado] = useState(false)
+  const [showModalGeneradoExito, setShowModalGeneradoExito] = useState(false)
   const [planDuplicadoId, setPlanDuplicadoId] = useState<number | null>(null)
   const [camposFaltantes, setCamposFaltantes] = useState<string[]>([])
   
@@ -746,38 +747,14 @@ function ProgramacionAnualContent() {
       : competenciasSeleccionadasModal.filter(id => id !== competenciaId)
     
     setCompetenciasSeleccionadasModal(newSelection)
-    
-    // Cargar capacidades de las competencias seleccionadas
-    if (newSelection.length > 0) {
-      const nuevasCapacidades = await loadCapacidadesModal(newSelection)
-      const idsNuevasCapacidades = nuevasCapacidades.map((c: Capacidad) => c.id.toString())
-      
-      // Mantener solo las capacidades seleccionadas que aún existen
-      setConocimientosSeleccionadosModal(prev => {
-        const capacidadesValidas = prev.filter(id => idsNuevasCapacidades.includes(id))
-        
-        // Si hay capacidades válidas, recargar desempeños
-        if (capacidadesValidas.length > 0) {
-          loadDesempeniosModal(capacidadesValidas).then((nuevosDesempenios) => {
-            // Mantener solo los desempeños seleccionados que aún existen
-            setDesempeniosSeleccionadosModal(prevDesempenios => {
-              const idsNuevosDesempenios = nuevosDesempenios.map((d: Desempenio) => d.id.toString())
-              return prevDesempenios.filter(id => idsNuevosDesempenios.includes(id))
-            })
-          })
-        } else {
-          setDesempeniosModal([])
-          setDesempeniosSeleccionadosModal([])
-        }
-        
-        return capacidadesValidas
-      })
-    } else {
-      setCapacidadesModal([])
-      setConocimientosSeleccionadosModal([])
-      setDesempeniosModal([])
-      setDesempeniosSeleccionadosModal([])
+  }
+
+  const handleSeleccionarTodasCompetenciasModal = (checked: boolean) => {
+    if (checked) {
+      setCompetenciasSeleccionadasModal(competencias.map((c) => c.id.toString()))
+      return
     }
+    setCompetenciasSeleccionadasModal([])
   }
 
   const handleConocimientoChangeModal = async (conocimientoId: string, checked: boolean) => {
@@ -815,85 +792,21 @@ function ProgramacionAnualContent() {
 
   const guardarSeleccionModal = async () => {
     if (unidadModalIndex === null) return
-    
-    // Determinar las competencias y capacidades relacionadas SOLO a los desempeños seleccionados
-    let competenciasRelacionadas: string[] = []
-    let capacidadesRelacionadas: string[] = []
-    
-    if (desempeniosSeleccionadosModal.length > 0) {
-      try {
-        // Obtener todos los desempeños seleccionados de la BD con sus capacidades y competencias
-        const idsString = desempeniosSeleccionadosModal.join(',')
-        const response = await fetch(`/api/competencias/desempenios?ids=${idsString}`)
-        const todosLosDesempenios: any[] = await response.json()
-        
-        // Extraer las capacidades únicas relacionadas a los desempeños seleccionados
-        const capacidadesIds = [...new Set(todosLosDesempenios.map((d: any) => d.idcapacidad).filter((id: any) => id !== undefined && id !== null))]
-        capacidadesRelacionadas = capacidadesIds.map((id: number) => id.toString())
-        
-        // Extraer las competencias únicas desde las capacidades de los desempeños
-        const competenciasIds = [...new Set(todosLosDesempenios.map((d: any) => d.capacidad?.idcompetencia).filter((id: any) => id !== undefined && id !== null))]
-        competenciasRelacionadas = competenciasIds.map((id: number) => id.toString())
-        
-        // Obtener las capacidades completas para mostrarlas en la página principal
-        const capacidadesIdsString = capacidadesIds.join(',')
-        const responseCapacidades = await fetch(`/api/competencias/capacidades?ids=${capacidadesIdsString}`)
-        const todasLasCapacidades = await responseCapacidades.json()
-        
-        // Guardar solo las competencias y capacidades relacionadas a los desempeños seleccionados
-        setUnidades(prevUnidades => {
-          const newUnidades = [...prevUnidades]
-          newUnidades[unidadModalIndex] = {
-            ...newUnidades[unidadModalIndex],
-            competenciaSeleccionada: competenciasRelacionadas[0] || '',  // Primera para compatibilidad
-            capacidadSeleccionada: capacidadesRelacionadas[0] || '',     // Primera para compatibilidad
-            competenciasSeleccionadas: competenciasRelacionadas,         // Solo las relacionadas
-            capacidadesSeleccionadas: capacidadesRelacionadas,           // Solo las relacionadas
-            desempeniosSeleccionados: desempeniosSeleccionadosModal
-          }
-          return newUnidades
-        })
-        
-        // Cargar los desempeños y capacidades relacionados para mostrarlos en la página principal
-        setTodosLosDesempeniosPorUnidad(prev => ({ ...prev, [unidadModalIndex]: todosLosDesempenios }))
-        setCapacidadesPorUnidad(prev => ({ ...prev, [unidadModalIndex]: todasLasCapacidades }))
-        
-        console.log('✅ [DEBUG] Guardando selección:', {
-          desempenios: desempeniosSeleccionadosModal.length,
-          capacidadesRelacionadas: capacidadesRelacionadas.length,
-          competenciasRelacionadas: competenciasRelacionadas.length
-        })
-      } catch (error) {
-        console.error('Error al cargar desempeños relacionados:', error)
-        // En caso de error, guardar lo que se tenía seleccionado
-        setUnidades(prevUnidades => {
-          const newUnidades = [...prevUnidades]
-          newUnidades[unidadModalIndex] = {
-            ...newUnidades[unidadModalIndex],
-            competenciaSeleccionada: competenciasSeleccionadasModal[0] || '',
-            capacidadSeleccionada: conocimientosSeleccionadosModal[0] || '',
-            competenciasSeleccionadas: competenciasSeleccionadasModal,
-            capacidadesSeleccionadas: conocimientosSeleccionadosModal,
-            desempeniosSeleccionados: desempeniosSeleccionadosModal
-          }
-          return newUnidades
-        })
+    // Modo simplificado: solo competencias
+    setUnidades(prevUnidades => {
+      const newUnidades = [...prevUnidades]
+      newUnidades[unidadModalIndex] = {
+        ...newUnidades[unidadModalIndex],
+        competenciaSeleccionada: competenciasSeleccionadasModal[0] || '',
+        competenciasSeleccionadas: competenciasSeleccionadasModal,
+        capacidadSeleccionada: '',
+        capacidadesSeleccionadas: [],
+        desempeniosSeleccionados: []
       }
-    } else {
-      // Si no hay desempeños seleccionados, limpiar todo
-      setUnidades(prevUnidades => {
-        const newUnidades = [...prevUnidades]
-        newUnidades[unidadModalIndex] = {
-          ...newUnidades[unidadModalIndex],
-          competenciaSeleccionada: '',
-          capacidadSeleccionada: '',
-          competenciasSeleccionadas: [],
-          capacidadesSeleccionadas: [],
-          desempeniosSeleccionados: []
-        }
-        return newUnidades
-      })
-    }
+      return newUnidades
+    })
+    setCapacidadesPorUnidad(prev => ({ ...prev, [unidadModalIndex]: [] }))
+    setTodosLosDesempeniosPorUnidad(prev => ({ ...prev, [unidadModalIndex]: [] }))
     
     cerrarModalCompetencias()
   }
@@ -1063,22 +976,10 @@ function ProgramacionAnualContent() {
   const handleFinalSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     
-    // Validar que al menos la unidad 0 tenga desempeños seleccionados
-    const unidad0 = unidades[0]
-    if (!unidad0.desempeniosSeleccionados || unidad0.desempeniosSeleccionados.length === 0) {
-      alert('⚠️ Por favor, selecciona al menos un desempeño en la UNIDAD 0 para generar el campo temático.')
-      return
-    }
-    
     // Validar que al menos la unidad 0 tenga competencia seleccionada
+    const unidad0 = unidades[0]
     if (!unidad0.competenciaSeleccionada) {
       alert('⚠️ Por favor, selecciona al menos una competencia en la UNIDAD 0.')
-      return
-    }
-    
-    // Validar que no haya más de 4 desempeños
-    if (unidad0.desempeniosSeleccionados.length > 4) {
-      alert('⚠️ Solo puedes seleccionar hasta 4 desempeños.')
       return
     }
     
@@ -1294,7 +1195,7 @@ function ProgramacionAnualContent() {
         // No es crítico, solo actualizamos el estado local
       }
       
-      alert('✅ Programación anual generada exitosamente')
+      setShowModalGeneradoExito(true)
     } catch (error) {
       console.error('Error al generar programación anual:', error)
       let errorMessage = 'Error al generar el documento'
@@ -1790,9 +1691,9 @@ function ProgramacionAnualContent() {
                       )}
                     </div>
 
-                    {/* Selección de Competencias y Desempeños */}
+                    {/* Selección de Competencias */}
                     <div className={styles.formGroup} style={{ borderTop: '2px solid #e0e0e0', paddingTop: '20px', marginTop: '20px' }}>
-                      <h4 style={{ marginBottom: '15px', color: '#0066cc', fontSize: '16px' }}>Competencias y desempeños</h4>
+                      <h4 style={{ marginBottom: '15px', color: '#0066cc', fontSize: '16px' }}>Competencias</h4>
 
                       <button
                         type="button"
@@ -1802,8 +1703,8 @@ function ProgramacionAnualContent() {
                         disabled={competencias.length === 0}
                       >
                         {unidad.competenciaSeleccionada || (unidad.desempeniosSeleccionados?.length ?? 0) > 0
-                          ? '✏️ Editar competencias y desempeños'
-                          : '➕ Seleccionar competencias y desempeños'}
+                          ? '✏️ Editar competencias'
+                          : '➕ Seleccionar competencias'}
                       </button>
 
                       {(unidad.competenciasSeleccionadas?.length > 0 || unidad.competenciaSeleccionada) && (
@@ -1951,28 +1852,6 @@ function ProgramacionAnualContent() {
               </div>
 
         
-
-              <div style={{ 
-                padding: '15px', 
-                backgroundColor: '#eff6ff', 
-                borderRadius: '8px', 
-                border: '2px solid #3b82f6',
-                marginBottom: '20px'
-              }}>
-                <p style={{ margin: 0, color: '#1e40af', fontWeight: 600, fontSize: '14px' }}>
-                  📋 <strong>Generar Programación Anual Completa:</strong> Este botón generará el documento Word completo con:
-                </p>
-                <ul style={{ margin: '10px 0 0 20px', color: '#1e40af', fontSize: '13px' }}>
-                  <li>✅ Situación Significativa (si ya la generaste)</li>
-                  <li>✅ Campo Temático (generado automáticamente con IA usando los desempeños seleccionados)</li>
-                  <li>✅ Competencias (obtenidas de la base de datos)</li>
-                  <li>✅ Producto (el que ingresaste)</li>
-                </ul>
-                <p style={{ margin: '10px 0 0 0', color: '#dc2626', fontWeight: 600, fontSize: '12px' }}>
-                  ⚠️ Asegúrate de haber seleccionado al menos una competencia y desempeños en la UNIDAD 0 antes de generar.
-                </p>
-              </div>
-
               <div className={styles.buttonGroup}>
                 <button
                   type="button"
@@ -2161,7 +2040,79 @@ function ProgramacionAnualContent() {
         </div>
       )}
 
-      {/* Modal de selección de Competencias y Desempeños */}
+      {/* Modal de generación exitosa */}
+      {showModalGeneradoExito && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(0, 0, 0, 0.5)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000
+          }}
+        >
+          <div
+            style={{
+              backgroundColor: 'white',
+              borderRadius: '12px',
+              padding: '24px',
+              maxWidth: '460px',
+              width: '90%',
+              boxShadow: '0 4px 6px rgba(0, 0, 0, 0.1)'
+            }}
+          >
+            <h2
+              style={{
+                marginTop: 0,
+                marginBottom: '12px',
+                color: '#1e40af',
+                fontSize: '24px',
+                fontWeight: 700
+              }}
+            >
+              Felicitaciones
+            </h2>
+            <p
+              style={{
+                marginBottom: '20px',
+                color: '#334155',
+                fontSize: '16px',
+                lineHeight: 1.5
+              }}
+            >
+              Haz creado con exito tu programacion anual
+            </p>
+            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowModalGeneradoExito(false)
+                  router.push('/home')
+                }}
+                style={{
+                  padding: '10px 22px',
+                  backgroundColor: '#2563eb',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '8px',
+                  cursor: 'pointer',
+                  fontSize: '14px',
+                  fontWeight: 600
+                }}
+              >
+                Aceptar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de selección de Competencias */}
       {showModalCompetencias && unidadModalIndex !== null && (
         <div style={{
           position: 'fixed',
@@ -2191,7 +2142,7 @@ function ProgramacionAnualContent() {
             boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1)'
           }}>
             <h2 style={{ marginBottom: '20px', color: '#0066cc', fontSize: '24px' }}>
-              Seleccionar Competencias y Desempeños - {unidadModalIndex === 0 ? 'UNIDAD 0' : `UNIDAD ${unidadModalIndex}`}
+              Seleccionar Competencias - {unidadModalIndex === 0 ? 'UNIDAD 0' : `UNIDAD ${unidadModalIndex}`}
             </h2>
 
             {/* Competencias */}
@@ -2204,6 +2155,29 @@ function ProgramacionAnualContent() {
                   </span>
                 )}
               </label>
+              {competencias.length > 0 && (
+                <label
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    marginBottom: '12px',
+                    fontSize: '14px',
+                    color: '#334155',
+                    cursor: 'pointer'
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={
+                      competencias.length > 0 &&
+                      competenciasSeleccionadasModal.length === competencias.length
+                    }
+                    onChange={(e) => handleSeleccionarTodasCompetenciasModal(e.target.checked)}
+                  />
+                  Seleccionar todas
+                </label>
+              )}
               {competencias.length === 0 ? (
                 <p className={styles.helpText} style={{ color: '#f59e0b' }}>
                   Selecciona área, grado y nivel en la Fase 1 para ver competencias
@@ -2260,8 +2234,8 @@ function ProgramacionAnualContent() {
               )}
             </div>
 
-            {/* Conocimientos */}
-            {competenciasSeleccionadasModal.length > 0 && (
+            {/* Conocimientos (oculto) */}
+            {false && competenciasSeleccionadasModal.length > 0 && (
               <div style={{ marginBottom: '25px' }}>
                 <label style={{ display: 'block', marginBottom: '12px', fontWeight: 600, fontSize: '16px' }}>
                   Conocimientos (Capacidades) <span className={styles.required}>*</span>
@@ -2336,8 +2310,8 @@ function ProgramacionAnualContent() {
               </div>
             )}
 
-            {/* Desempeños */}
-            {conocimientosSeleccionadosModal.length > 0 && (
+            {/* Desempeños (oculto) */}
+            {false && conocimientosSeleccionadosModal.length > 0 && (
               <div style={{ marginBottom: '25px' }}>
                 <label style={{ display: 'block', marginBottom: '12px', fontWeight: 600, fontSize: '16px' }}>
                   Desempeños <span className={styles.required}>*</span>
@@ -2460,24 +2434,24 @@ function ProgramacionAnualContent() {
               </button>
               <button
                 onClick={guardarSeleccionModal}
-                disabled={competenciasSeleccionadasModal.length === 0 || desempeniosSeleccionadosModal.length === 0}
+                disabled={competenciasSeleccionadasModal.length === 0}
                 style={{
                   padding: '12px 24px',
-                  backgroundColor: competenciasSeleccionadasModal.length === 0 || desempeniosSeleccionadosModal.length === 0 ? '#9ca3af' : '#3b82f6',
+                  backgroundColor: competenciasSeleccionadasModal.length === 0 ? '#9ca3af' : '#3b82f6',
                   color: 'white',
                   border: 'none',
                   borderRadius: '6px',
-                  cursor: competenciasSeleccionadasModal.length === 0 || desempeniosSeleccionadosModal.length === 0 ? 'not-allowed' : 'pointer',
+                  cursor: competenciasSeleccionadasModal.length === 0 ? 'not-allowed' : 'pointer',
                   fontSize: '14px',
                   fontWeight: 500
                 }}
                 onMouseOver={(e) => {
-                  if (competenciasSeleccionadasModal.length > 0 && desempeniosSeleccionadosModal.length > 0) {
+                  if (competenciasSeleccionadasModal.length > 0) {
                     e.currentTarget.style.backgroundColor = '#2563eb'
                   }
                 }}
                 onMouseOut={(e) => {
-                  if (competenciasSeleccionadasModal.length > 0 && desempeniosSeleccionadosModal.length > 0) {
+                  if (competenciasSeleccionadasModal.length > 0) {
                     e.currentTarget.style.backgroundColor = '#3b82f6'
                   }
                 }}
@@ -2614,6 +2588,56 @@ function ProgramacionAnualContent() {
                 ⚡ Actualizar Solo lo que Falta
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Loader durante la generación de programación anual */}
+      {loading && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            backgroundColor: 'rgba(15, 23, 42, 0.55)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1200,
+            padding: '16px'
+          }}
+        >
+          <div
+            style={{
+              backgroundColor: 'white',
+              borderRadius: '12px',
+              padding: '22px 24px',
+              maxWidth: '440px',
+              width: '100%',
+              textAlign: 'center',
+              boxShadow: '0 16px 30px rgba(0,0,0,0.2)'
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '12px' }}>
+              <svg width="52" height="52" viewBox="0 0 50 50" role="img" aria-label="Cargando">
+                <circle cx="25" cy="25" r="20" fill="none" stroke="#cbd5e1" strokeWidth="6" />
+                <path d="M25 5a20 20 0 0 1 20 20" fill="none" stroke="#2563eb" strokeWidth="6" strokeLinecap="round">
+                  <animateTransform
+                    attributeName="transform"
+                    type="rotate"
+                    from="0 25 25"
+                    to="360 25 25"
+                    dur="0.9s"
+                    repeatCount="indefinite"
+                  />
+                </path>
+              </svg>
+            </div>
+            <h3 style={{ margin: '0 0 8px', color: '#1e3a8a', fontSize: '18px', fontWeight: 700 }}>
+              Generando programación anual...
+            </h3>
+            <p style={{ margin: 0, color: '#475569', fontSize: '14px', lineHeight: 1.45 }}>
+              Este proceso puede tardar unos minutos. Por favor espera sin cerrar la página.
+            </p>
           </div>
         </div>
       )}

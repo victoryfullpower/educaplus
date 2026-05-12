@@ -1,0 +1,203 @@
+.main {
+  min-height: calc(100vh - 80px);
+  background: linear-gradient(160deg, #1e1b4b 0%, #4c1d95 40%, #7c3aed 100%);
+  padding: 32px 20px 56px;
+}
+
+.inner {
+  max-width: 1040px;
+  margin: 0 auto;
+}
+
+.hero {
+  text-align: center;
+  margin-bottom: 40px;
+}
+
+.hero h1 {
+  margin: 0 0 12px;
+  font-size: clamp(1.75rem, 4vw, 2.25rem);
+  font-weight: 800;
+  color: #faf5ff;
+  letter-spacing: -0.02em;
+}
+
+.hero p {
+  margin: 0;
+  color: rgba(250, 245, 255, 0.88);
+  font-size: 1.05rem;
+  line-height: 1.55;
+  max-width: 720px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.block {
+  background: rgba(255, 255, 255, 0.98);
+  border-radius: 16px;
+  padding: 28px 24px 32px;
+  margin-bottom: 28px;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.18);
+}
+
+.blockTitle {
+  margin: 0 0 8px;
+  font-size: 1.35rem;
+  font-weight: 800;
+  color: #1e1b4b;
+}
+
+.blockSubtitle {
+  margin: 0 0 20px;
+  font-size: 0.95rem;
+  color: #64748b;
+  line-height: 1.5;
+}
+
+.tiposGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+@media (max-width: 720px) {
+  .tiposGrid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.tipoCard {
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 16px;
+  background: #f8fafc;
+}
+
+.tipoCard h3 {
+  margin: 0 0 10px;
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: #4c1d95;
+}
+
+.tipoCard ul {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 0.82rem;
+  color: #475569;
+  line-height: 1.45;
+}
+
+.tableWrap {
+  overflow-x: auto;
+  border-radius: 10px;
+  border: 1px solid #e2e8f0;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.table th,
+.table td {
+  padding: 12px 14px;
+  text-align: left;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.table th {
+  background: #f1f5f9;
+  font-weight: 700;
+  color: #334155;
+}
+
+.table tr:last-child td {
+  border-bottom: none;
+}
+
+.table td:last-child,
+.table th:last-child {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.kitGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+}
+
+@media (max-width: 640px) {
+  .kitGrid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.kitCard {
+  border: 2px solid #c4b5fd;
+  border-radius: 14px;
+  padding: 24px;
+  background: linear-gradient(180deg, #faf5ff 0%, #fff 100%);
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.kitCard h3 {
+  margin: 0 0 8px;
+  font-size: 1.1rem;
+  color: #5b21b6;
+}
+
+.kitPrice {
+  font-size: 2rem;
+  font-weight: 800;
+  color: #1e1b4b;
+  margin-bottom: 6px;
+}
+
+.kitNote {
+  font-size: 0.85rem;
+  color: #64748b;
+  margin-bottom: 18px;
+  flex: 1;
+}
+
+.btn {
+  display: inline-block;
+  text-align: center;
+  padding: 12px 20px;
+  border-radius: 10px;
+  font-weight: 700;
+  font-size: 0.95rem;
+  text-decoration: none;
+  border: none;
+  cursor: pointer;
+  transition: transform 0.15s, box-shadow 0.15s;
+}
+
+.btnPrimary {
+  background: linear-gradient(135deg, #7c3aed 0%, #5b21b6 100%);
+  color: white;
+  box-shadow: 0 4px 14px rgba(91, 33, 182, 0.35);
+}
+
+.btnPrimary:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 20px rgba(91, 33, 182, 0.45);
+}
+
+.btnCell {
+  padding: 8px 14px;
+  font-size: 0.85rem;
+}
+
+.note {
+  margin-top: 16px;
+  font-size: 0.8rem;
+  color: #64748b;
+  line-height: 1.4;
+}
