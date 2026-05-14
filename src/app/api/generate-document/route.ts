@@ -50,6 +50,19 @@ const AREA_FOLDER_MAP: Record<string, string> = {
   'EPT EMPRENDIMIENTO': 'EPT EMPRENDIMIENTO 1° A 5°'
 }
 
+/** IDs de área en BD → carpeta de plantillas (EPT desglosado) */
+const EPT_AREA_ID_TO_FOLDER: Record<string, string> = {
+  '10': 'EPT AGROPECUARIA 1° A 5°',
+  '14': 'EPT COMPUTACIÓN 1° A 5°',
+  '15': 'EPT EMPRENDIMIENTO 1° A 5°'
+}
+
+function resolveFolderFromAreaId(areaId: unknown): string | null {
+  const id = String(areaId ?? '').trim()
+  if (!id || id === 'undefined') return null
+  return EPT_AREA_ID_TO_FOLDER[id] ?? null
+}
+
 function resolveFolderByAreaKey(areaKey: string): string | null {
   if (AREA_FOLDER_MAP[areaKey]) return AREA_FOLDER_MAP[areaKey]
 
@@ -70,9 +83,10 @@ function resolveFolderByAreaKey(areaKey: string): string | null {
   if (contains('TUTORIA')) return 'TUTORÍA 1° A 5°'
   if (contains('RELIGION')) return 'RELIGIÓN 1° A 5°'
   if (contains('QUECHUA')) return 'QUECHUA 1° A 5°'
-  if (contains('EPT') && contains('COMPUTACION')) return 'EPT COMPUTACIÓN 1° A 5°'
-  if (contains('EPT') && contains('AGROPECUARIA')) return 'EPT AGROPECUARIA 1° A 5°'
-  if (contains('EPT') && contains('EMPRENDIMIENTO')) return 'EPT EMPRENDIMIENTO 1° A 5°'
+  const eptLike = contains('EPT') || contains('TRABAJO')
+  if (eptLike && contains('COMPUTACION')) return 'EPT COMPUTACIÓN 1° A 5°'
+  if (eptLike && contains('AGROPECUARIA')) return 'EPT AGROPECUARIA 1° A 5°'
+  if (eptLike && contains('EMPRENDIMIENTO')) return 'EPT EMPRENDIMIENTO 1° A 5°'
 
   return null
 }
@@ -86,11 +100,13 @@ function resolvePlanAnualTemplatePath(formData: any): string {
 
   const areaKey = normalizeAreaKey(formData?.area)
   const grade = extractGradeNumber(formData?.grado)
-  const folderName = resolveFolderByAreaKey(areaKey)
+  const folderName =
+    resolveFolderFromAreaId(formData?.areaId) ?? resolveFolderByAreaKey(areaKey)
 
   if (!folderName || !grade) {
     console.warn('⚠️ [DEBUG] Plantilla fallback por área/grado no resuelto:', {
       areaOriginal: formData?.area,
+      areaId: formData?.areaId,
       areaKey,
       grade
     })
@@ -127,16 +143,19 @@ export const dynamic = 'force-dynamic'
 export async function POST(request: NextRequest) {
   try {
     const requestBody = await request.json()
-    const { 
-      formData, 
-      unidades, 
-      aiProvider = 'openai', 
+    const {
+      formData: formDataInput,
+      unidades,
+      aiProvider = 'openai',
       openaiModel = 'gpt-5-mini',
       modoGeneracion = 'regenerar',
       unidadesParaGenerar = [],
       datosExistentes = {},
       planAnualId
     } = requestBody
+
+    // Algunos clientes envían solo el objeto de formulario (sin wrapper `formData`)
+    const formData = formDataInput != null ? formDataInput : requestBody
 
     console.log('📥 [DEBUG] Datos recibidos:', {
       tieneFormData: !!formData,
