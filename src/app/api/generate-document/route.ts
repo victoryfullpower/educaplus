@@ -70,12 +70,16 @@ function resolveFolderByAreaKey(areaKey: string): string | null {
   // "Ciencia y Tecnología (CYT)", "Educación Física", etc.
   const contains = (token: string) => areaKey.includes(token)
 
-  if (contains('CYT') || contains('CIENCIA') || contains('TECNOLOGIA')) {
-    return 'CYT 1° A 5°'
-  }
   if (contains('COMUNICACION')) return 'COMUNICACIÓN 1° A 5°'
   if (contains('MATEMATICA')) return 'MATEMATICA 1° A 5°'
+  // Antes que "CIENCIA" genérico (evita confundir Ciencias Sociales con CYT)
   if (contains('CCSS') || contains('SOCIALES')) return 'CCSS 1° A 5°'
+  if (contains('CYT') || contains('TECNOLOGIA')) {
+    return 'CYT 1° A 5°'
+  }
+  if (contains('CIENCIA') && !contains('SOCIALES')) {
+    return 'CYT 1° A 5°'
+  }
   if (contains('DPCC')) return 'DPCC 1° A 5°'
   if (contains('INGLES')) return 'INGLÉS 1° A 5°'
   if (contains('ARTE')) return 'ARTE 1° A 5'

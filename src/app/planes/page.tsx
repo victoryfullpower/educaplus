@@ -1,92 +1,129 @@
+'use client'
+
 import Link from 'next/link'
+import { useState } from 'react'
 import Header from '@/components/Header'
 import {
-  AREAS_TIPO_A,
-  AREAS_TIPO_B,
-  ETIQUETA_GRADOS_UNIDAD,
-  PRECIO_KIT_ANUAL,
-  PRECIO_UNIDAD,
-  type AreaTipoComercial,
-  type GradosVentaUnidad
+  ETIQUETA_GRADOS,
+  GRADOS_KEYS,
+  includesPorGrado,
+  precioPlan,
+  type CantidadGrados,
+  type PlanVigencia,
+  type SesionesPorUnidad
 } from '@/lib/planes-comerciales'
 import styles from './planes.module.css'
 
-const GRADOS_KEYS: GradosVentaUnidad[] = ['1', '2', '3', '4', '15']
-
-function hrefUnidad(grados: GradosVentaUnidad, tipo: AreaTipoComercial) {
-  return `/planes/comprar?modalidad=unidad&tipo=${tipo}&grados=${grados}`
+function hrefComprar(
+  vigencia: PlanVigencia,
+  sesiones: SesionesPorUnidad,
+  grados: CantidadGrados
+) {
+  const params = new URLSearchParams({
+    plan: vigencia,
+    sesiones: String(sesiones),
+    grados
+  })
+  return `/planes/comprar?${params.toString()}`
 }
 
 export default function PlanesPage() {
+  const [vigencia, setVigencia] = useState<PlanVigencia>('mensual')
+  const [sesiones, setSesiones] = useState<SesionesPorUnidad>(5)
+
+  const includes = includesPorGrado(sesiones)
+  const vigenciaLabel = vigencia === 'mensual' ? 'mensual' : 'anual'
+  const sesionesLabel = `${sesiones} sesiones por unidad`
+
   return (
     <>
       <Header />
       <main className={styles.main}>
+        <div className={styles.hero}>
+          <h1>Planes EducaPlus</h1>
+          <p>
+            Accede a los materiales <strong>por unidad didáctica</strong> o con el{' '}
+            <strong>kit anual</strong> (8 unidades). Los precios varían según el tipo de área (A o B)
+            y la cantidad de grados que incluyas.
+          </p>
+        </div>
+
         <div className={styles.inner}>
-          <div className={styles.hero}>
-            <h1>Planes EducaPlus</h1>
-            <p>
-              Elige cómo quieres acceder a los materiales con IA: <strong>por unidad didáctica</strong>{' '}
-              (según cantidad de grados) o el <strong>kit anual</strong> con las 8 unidades. Los precios
-              dependen del tipo de área (A: alta carga, B: carga media).
-            </p>
+          <div className={styles.planToggleRow}>
+            <button
+              type="button"
+              className={`${styles.planToggle} ${styles.planMensual} ${
+                vigencia === 'mensual' ? styles.planToggleActive : ''
+              }`}
+              onClick={() => setVigencia('mensual')}
+            >
+              <span className={styles.planToggleTitle}>PLAN MENSUAL</span>
+              <span className={styles.planToggleSub}>Ahorro del 10%</span>
+            </button>
+            <button
+              type="button"
+              className={`${styles.planToggle} ${styles.planAnual} ${
+                vigencia === 'anual' ? styles.planToggleActive : ''
+              }`}
+              onClick={() => setVigencia('anual')}
+            >
+              <span className={styles.planToggleTitle}>PLAN ANUAL</span>
+              <span className={styles.planToggleSub}>Ahorro del 25%</span>
+            </button>
           </div>
 
-          <section className={styles.block} id="por-unidad">
-            <h2 className={styles.blockTitle}>Modalidad: por unidad</h2>
-            <p className={styles.blockSubtitle}>
-              Incluye el paquete de materiales por cada unidad según tu área (Tipo A o B). El precio varía
-              según cuántos grados incluye tu compra.
-            </p>
+          <p className={styles.sesionesPrompt}>Selecciona el número de sesiones por unidad</p>
 
-            <div className={styles.tiposGrid}>
-              <div className={styles.tipoCard}>
-                <h3>Áreas Tipo A (alta carga)</h3>
-                <ul>
-                  {AREAS_TIPO_A.map((a) => (
-                    <li key={a}>{a}</li>
-                  ))}
-                </ul>
-              </div>
-              <div className={styles.tipoCard}>
-                <h3>Áreas Tipo B (carga media)</h3>
-                <ul>
-                  {AREAS_TIPO_B.map((a) => (
-                    <li key={a}>{a}</li>
-                  ))}
-                </ul>
-              </div>
+          <div className={styles.sesionesRow}>
+            <button
+              type="button"
+              className={`${styles.sesionesBtn} ${
+                sesiones === 5 ? styles.sesionesBtnActive : ''
+              }`}
+              onClick={() => setSesiones(5)}
+            >
+              5 sesiones por unidad
+            </button>
+            <button
+              type="button"
+              className={`${styles.sesionesBtn} ${
+                sesiones === 10 ? styles.sesionesBtnActive : ''
+              }`}
+              onClick={() => setSesiones(10)}
+            >
+              10 sesiones por unidad
+            </button>
+          </div>
+
+          <section className={styles.pricingCard}>
+            <div
+              className={`${styles.pricingBanner} ${
+                sesiones === 5 ? styles.banner5 : styles.banner10
+              }`}
+            >
+              Plan {vigenciaLabel} · {sesionesLabel}
             </div>
 
             <div className={styles.tableWrap}>
               <table className={styles.table}>
                 <thead>
                   <tr>
-                    <th>Alcance (venta por unidad)</th>
-                    <th>Tipo A (S/)</th>
-                    <th>Tipo B (S/)</th>
+                    <th>Alcance</th>
+                    <th>Precio (S/)</th>
+                    <th />
                   </tr>
                 </thead>
                 <tbody>
                   {GRADOS_KEYS.map((g) => (
                     <tr key={g}>
-                      <td>{ETIQUETA_GRADOS_UNIDAD[g]}</td>
-                      <td>
-                        S/ {PRECIO_UNIDAD.A[g].toFixed(2)}
-                        <Link
-                          className={`${styles.btn} ${styles.btnPrimary} ${styles.btnCell}`}
-                          href={hrefUnidad(g, 'A')}
-                          style={{ marginLeft: 12 }}
-                        >
-                          Comprar
-                        </Link>
+                      <td>{ETIQUETA_GRADOS[g]}</td>
+                      <td className={styles.priceCell}>
+                        S/ {precioPlan(vigencia, sesiones, g).toFixed(0)}
                       </td>
-                      <td>
-                        S/ {PRECIO_UNIDAD.B[g].toFixed(2)}
+                      <td className={styles.actionCell}>
                         <Link
-                          className={`${styles.btn} ${styles.btnPrimary} ${styles.btnCell}`}
-                          href={hrefUnidad(g, 'B')}
-                          style={{ marginLeft: 12 }}
+                          className={`${styles.btn} ${styles.btnBuyRow}`}
+                          href={hrefComprar(vigencia, sesiones, g)}
                         >
                           Comprar
                         </Link>
@@ -96,43 +133,29 @@ export default function PlanesPage() {
                 </tbody>
               </table>
             </div>
-            <p className={styles.note}>
-              Los montos aplican por unidad didáctica según el alcance de grados elegido. El pago se
-              confirmará en el siguiente paso (pasarela en integración).
-            </p>
-          </section>
 
-          <section className={styles.block} id="kit-anual">
-            <h2 className={styles.blockTitle}>Modalidad: kit anual</h2>
-            <p className={styles.blockSubtitle}>
-              Las 8 unidades didácticas para grados 1° a 5°, según tipo de área.
-            </p>
+            <h3 className={styles.includesTitle}>¿Qué incluye por grado?</h3>
+            <ul className={styles.includesList}>
+              {includes.map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
 
-            <div className={styles.kitGrid}>
-              <div className={styles.kitCard}>
-                <h3>Tipo A — 1° a 5°</h3>
-                <div className={styles.kitPrice}>S/ {PRECIO_KIT_ANUAL.A.toFixed(2)}</div>
-                <p className={styles.kitNote}>Incluye el kit completo de unidades para áreas de alta carga.</p>
-                <Link
-                  className={`${styles.btn} ${styles.btnPrimary}`}
-                  href="/planes/comprar?modalidad=kit&tipo=A"
-                >
-                  Comprar kit anual
-                </Link>
-              </div>
-              <div className={styles.kitCard}>
-                <h3>Tipo B — 1° a 5°</h3>
-                <div className={styles.kitPrice}>S/ {PRECIO_KIT_ANUAL.B.toFixed(2)}</div>
-                <p className={styles.kitNote}>Incluye el kit completo de unidades para áreas de carga media.</p>
-                <Link
-                  className={`${styles.btn} ${styles.btnPrimary}`}
-                  href="/planes/comprar?modalidad=kit&tipo=B"
-                >
-                  Comprar kit anual
-                </Link>
-              </div>
+            <div className={styles.ctaWrap}>
+              <Link
+                className={styles.btnComprarAhora}
+                href={hrefComprar(vigencia, sesiones, '1')}
+              >
+                COMPRAR AHORA
+              </Link>
             </div>
           </section>
+
+          <p className={styles.areasNote}>
+            Las áreas <strong>Tipo A</strong> (Comunicación, Matemática, Ciencia y Tecnología, CCSS)
+            corresponden al plan de <strong>10 sesiones</strong>. Las demás áreas usan el plan de{' '}
+            <strong>5 sesiones</strong>.
+          </p>
         </div>
       </main>
     </>

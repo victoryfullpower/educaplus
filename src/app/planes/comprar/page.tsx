@@ -5,17 +5,36 @@ import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 import Header from '@/components/Header'
 import {
+  ETIQUETA_GRADOS,
   ETIQUETA_GRADOS_UNIDAD,
   precioKit,
+  precioPlan,
   precioUnidad,
   type AreaTipoComercial,
-  type GradosVentaUnidad
+  type CantidadGrados,
+  type GradosVentaUnidad,
+  type PlanVigencia,
+  type SesionesPorUnidad
 } from '@/lib/planes-comerciales'
 import styles from '../planes.module.css'
 import comprarStyles from './comprar.module.css'
 
 function esGradosValido(s: string | null): s is GradosVentaUnidad {
-  return s === '1' || s === '2' || s === '3' || s === '4' || s === '15'
+  return s === '1' || s === '2' || s === '3' || s === '4' || s === '5' || s === '15'
+}
+
+function esCantidadGrados(s: string | null): s is CantidadGrados {
+  return s === '1' || s === '2' || s === '3' || s === '4' || s === '5'
+}
+
+function esPlanValido(s: string | null): s is PlanVigencia {
+  return s === 'mensual' || s === 'anual'
+}
+
+function parseSesiones(s: string | null): SesionesPorUnidad | null {
+  if (s === '5') return 5
+  if (s === '10') return 10
+  return null
 }
 
 function esTipoValido(s: string | null): s is AreaTipoComercial {
@@ -24,6 +43,8 @@ function esTipoValido(s: string | null): s is AreaTipoComercial {
 
 function ContenidoComprar() {
   const searchParams = useSearchParams()
+  const planRaw = searchParams.get('plan')
+  const sesionesRaw = searchParams.get('sesiones')
   const modalidad = searchParams.get('modalidad')
   const tipoRaw = searchParams.get('tipo')
   const gradosRaw = searchParams.get('grados')
@@ -37,20 +58,33 @@ function ContenidoComprar() {
       .catch(() => setAuth(false))
   }, [])
 
+  const plan = esPlanValido(planRaw) ? planRaw : null
+  const sesiones = parseSesiones(sesionesRaw)
+  const gradosNuevo = esCantidadGrados(gradosRaw) ? gradosRaw : null
+
   const tipo = esTipoValido(tipoRaw) ? tipoRaw : null
   const grados = esGradosValido(gradosRaw) ? gradosRaw : null
 
+  const validoNuevo = plan !== null && sesiones !== null && gradosNuevo !== null
   const validoUnidad =
     modalidad === 'unidad' && tipo !== null && grados !== null
   const validoKit = modalidad === 'kit' && tipo !== null
-  const valido = validoUnidad || validoKit
+  const valido = validoNuevo || validoUnidad || validoKit
 
   let monto: number | null = null
   let titulo = ''
   let detalle = ''
 
-  if (validoUnidad && tipo && grados) {
-    monto = precioUnidad(tipo, grados)
+  if (validoNuevo && plan && sesiones !== null && gradosNuevo) {
+    monto = precioPlan(plan, sesiones, gradosNuevo)
+    titulo =
+      plan === 'mensual'
+        ? `Plan mensual — ${sesiones} sesiones por unidad`
+        : `Plan anual — ${sesiones} sesiones por unidad`
+    detalle = `${ETIQUETA_GRADOS[gradosNuevo]} · kit de materiales según selección`
+  } else if (validoUnidad && tipo && grados) {
+    const g = grados === '15' ? '5' : grados
+    monto = precioUnidad(tipo, g as CantidadGrados)
     titulo = `Compra por unidad — Tipo ${tipo}`
     detalle = `${ETIQUETA_GRADOS_UNIDAD[grados]} · unidad didáctica según plan elegido`
   } else if (validoKit && tipo) {
