@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getUserId } from '@/lib/auth'
+import { enriquecerPlanesConEstado } from '@/lib/plan-estado-documentos'
 
 function normalizePlanIdField(v: unknown): string {
   if (v === undefined || v === null || v === '') return ''
@@ -253,7 +254,21 @@ export async function GET(request: NextRequest) {
       }
     })
 
-    return NextResponse.json({ planesAnuales: planes })
+    const unidadesUsuario = await prisma.unidadAprendizaje.findMany({
+      where: { idusuario: userId },
+      include: {
+        listaSesiones: {
+          include: {
+            fichaAprendizaje: true,
+            rubrica: true
+          }
+        }
+      }
+    })
+
+    const planesConEstado = enriquecerPlanesConEstado(planes, unidadesUsuario)
+
+    return NextResponse.json({ planesAnuales: planesConEstado })
   } catch (error) {
     console.error('Error al obtener planes anuales:', error)
     const errorMessage = error instanceof Error ? error.message : 'Error desconocido'

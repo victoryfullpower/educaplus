@@ -4,6 +4,13 @@ import { useState, useEffect, Suspense } from 'react'
 import { useSearchParams, useRouter } from 'next/navigation'
 import Header from '@/components/Header'
 import { getDepartamentos, getProvinciasByDepartamento, getDistritosByProvincia } from '@/lib/ubigeos'
+import {
+  guardarRetornoModal,
+  leerRetornoModal,
+  linkHomeConModalRetorno,
+  type ModalReturnState
+} from '@/lib/plan-modal-return'
+import { linkHomeConAreaTab } from '@/lib/plan-area-tab'
 import styles from './programacion-anual.module.css'
 
 interface Area {
@@ -56,6 +63,22 @@ interface Unidad {
   conocimientos: string
 }
 
+type ErrorParProblemaProducto = { problema?: boolean; producto?: boolean }
+
+/** Si uno tiene texto, el otro es obligatorio; ambos vacíos es válido. */
+function erroresParProblemaProducto(
+  problema: string,
+  producto: string
+): ErrorParProblemaProducto {
+  const p = problema.trim()
+  const pr = producto.trim()
+  if (!p && !pr) return {}
+  return {
+    problema: pr.length > 0 && !p,
+    producto: p.length > 0 && !pr
+  }
+}
+
 function ProgramacionAnualContent() {
   const router = useRouter()
   const searchParams = useSearchParams()
@@ -106,8 +129,7 @@ function ProgramacionAnualContent() {
             }
           }
         }
-        // Sin ?planId= no se precarga ningún plan: cada documento del home se edita por su id;
-        // un plan nuevo se crea al guardar Fase 1 (clave usuario + año + área + nivel + grado).
+        // Sin ?planId= no se precarga ningún plan; el registro en BD se crea al generar el documento.
         
         // Cargar datos de Fase 1 desde el plan existente
         if (planExistente) {
@@ -141,6 +163,10 @@ function ProgramacionAnualContent() {
             }
           }
           
+          if (planExistente.unidades && Array.isArray(planExistente.unidades)) {
+            setUnidadesExistentes(planExistente.unidades)
+          }
+
           console.log('✅ [DEBUG] Plan anual existente cargado al inicio:', {
             nivel: planExistente.nivel,
             nivelId: planExistente.nivelId
@@ -195,6 +221,50 @@ function ProgramacionAnualContent() {
 
     loadCompetencias()
   }, [formData.areaId, formData.gradoId, formData.nivelId])
+
+  const unidadSinCompetencias = (u: Unidad): Unidad => ({
+    ...u,
+    competenciaSeleccionada: '',
+    competenciasSeleccionadas: [],
+    capacidadSeleccionada: '',
+    capacidadesSeleccionadas: [],
+    desempeniosSeleccionados: []
+  })
+
+  /** Con problema + producto: todas las competencias; si falta uno: se limpian */
+  const autoSeleccionarCompetenciasEnUnidad = (
+    unidad: Unidad,
+    listaCompetencias: Competencia[]
+  ): Unidad => {
+    const tieneProblema = !!unidad.problemaPotencialidad?.trim()
+    const tieneProducto = !!unidad.producto?.trim()
+
+    if (!tieneProblema || !tieneProducto) {
+      const yaVacias =
+        !unidad.competenciaSeleccionada &&
+        (unidad.competenciasSeleccionadas?.length ?? 0) === 0 &&
+        (unidad.desempeniosSeleccionados?.length ?? 0) === 0
+      return yaVacias ? unidad : unidadSinCompetencias(unidad)
+    }
+
+    const ids = listaCompetencias.map((c) => c.id.toString())
+    if (ids.length === 0) return unidad
+
+    const yaTieneTodas =
+      unidad.competenciasSeleccionadas?.length === ids.length &&
+      ids.every((id) => unidad.competenciasSeleccionadas!.includes(id))
+    if (yaTieneTodas) return unidad
+
+    return {
+      ...unidad,
+      competenciaSeleccionada: ids[0] || '',
+      competenciasSeleccionadas: ids,
+      capacidadSeleccionada: '',
+      capacidadesSeleccionadas: [],
+      desempeniosSeleccionados: []
+    }
+  }
+
   const [unidades, setUnidades] = useState<Unidad[]>(Array(9).fill(null).map(() => ({
     problemaPotencialidad: '',
     producto: '',
@@ -230,7 +300,37 @@ function ProgramacionAnualContent() {
   const [showModalPlanExistente, setShowModalPlanExistente] = useState(false)
   const [modoGeneracion, setModoGeneracion] = useState<'regenerar' | 'actualizar' | null>(null)
   const [unidadesExistentes, setUnidadesExistentes] = useState<any[]>([])
-  
+
+  /** Plan cargado por ?planId= o detectado en BD: Fase 1 solo lectura. */
+  const esEdicionPlan = Boolean(planIdParam || planAnualExistente?.id)
+  const fase1SoloLectura = loadingData || esEdicionPlan
+
+  const unidadesGuardadasEnPlan = (): unknown[] => {
+    if (unidadesExistentes.length > 0) return unidadesExistentes
+    const u = planAnualExistente?.unidades
+    return Array.isArray(u) ? u : []
+  }
+
+  const unidadPlanTieneDatosGuardados = (u: unknown): boolean => {
+    if (!u || typeof u !== 'object') return false
+    const slot = u as Record<string, unknown>
+    return !!(
+      String(slot.problemaPotencialidad ?? '').trim() ||
+      String(slot.producto ?? '').trim() ||
+      String(slot.situacionSignificativa ?? '').trim() ||
+      String(slot.tituloUnidad ?? '').trim() ||
+      String(slot.campoTematico ?? '').trim() ||
+      String(slot.conocimientos ?? '').trim() ||
+      (Array.isArray(slot.competenciasSeleccionadas) &&
+        slot.competenciasSeleccionadas.length > 0) ||
+      (Array.isArray(slot.desempeniosSeleccionados) &&
+        slot.desempeniosSeleccionados.length > 0)
+    )
+  }
+
+  const esUnidadRegistradaEnPlan = (index: number): boolean =>
+    esEdicionPlan && unidadPlanTieneDatosGuardados(unidadesGuardadasEnPlan()[index])
+
   // Estados para el modal de selección de competencias/desempeños
   const [showModalCompetencias, setShowModalCompetencias] = useState(false)
   const [unidadModalIndex, setUnidadModalIndex] = useState<number | null>(null)
@@ -241,6 +341,23 @@ function ProgramacionAnualContent() {
   const [desempeniosModal, setDesempeniosModal] = useState<Desempenio[]>([])
   const [loadingCapacidadesModal, setLoadingCapacidadesModal] = useState(false)
   const [loadingDesempeniosModal, setLoadingDesempeniosModal] = useState(false)
+  const [erroresParUnidad, setErroresParUnidad] = useState<
+    Record<number, ErrorParProblemaProducto>
+  >({})
+
+  useEffect(() => {
+    if (competencias.length === 0) return
+    setUnidades((prev) => {
+      let changed = false
+      const next = prev.map((u, index) => {
+        if (index === 0) return u
+        const updated = autoSeleccionarCompetenciasEnUnidad(u, competencias)
+        if (updated !== u) changed = true
+        return updated
+      })
+      return changed ? next : prev
+    })
+  }, [competencias])
 
   const handleDepartamentoChange = (departamento: string) => {
     setFormData({
@@ -266,27 +383,169 @@ function ProgramacionAnualContent() {
     })
   }
 
+  const cargarUnidadesDesdePlan = async (plan: { unidades?: unknown }) => {
+    if (!plan.unidades || !Array.isArray(plan.unidades) || plan.unidades.length === 0) {
+      return
+    }
+    setUnidadesExistentes(plan.unidades)
+
+    const nuevasUnidades = [...unidades]
+    const nuevasCapacidadesPorUnidad: { [key: number]: Capacidad[] } = {}
+    const nuevosDesempeniosPorUnidad: { [key: number]: Desempenio[] } = {}
+
+    for (let index = 0; index < 9 && index < plan.unidades.length; index++) {
+      const unidadExistente = plan.unidades[index] as Unidad & {
+        situacionSignificativa?: string
+        campoTematico?: string
+      }
+
+      if (
+        unidadExistente &&
+        (unidadExistente.problemaPotencialidad ||
+          unidadExistente.producto ||
+          (unidadExistente.desempeniosSeleccionados?.length ?? 0) > 0)
+      ) {
+        nuevasUnidades[index] = {
+          ...nuevasUnidades[index],
+          ...unidadExistente,
+          tieneTituloIA: true,
+          competenciasSeleccionadas: unidadExistente.competenciasSeleccionadas || [],
+          capacidadesSeleccionadas: unidadExistente.capacidadesSeleccionadas || [],
+          desempeniosSeleccionados: unidadExistente.desempeniosSeleccionados || []
+        }
+
+        if (
+          unidadExistente.desempeniosSeleccionados &&
+          Array.isArray(unidadExistente.desempeniosSeleccionados) &&
+          unidadExistente.desempeniosSeleccionados.length > 0
+        ) {
+          try {
+            const idsString = unidadExistente.desempeniosSeleccionados.join(',')
+            const responseDesempenios = await fetch(
+              `/api/competencias/desempenios?ids=${idsString}`
+            )
+            const desempeniosCompletos: Desempenio[] = await responseDesempenios.json()
+
+            if (desempeniosCompletos?.length > 0) {
+              nuevosDesempeniosPorUnidad[index] = desempeniosCompletos
+              const capacidadesIds = [...new Set(desempeniosCompletos.map((d) => d.idcapacidad))]
+              if (capacidadesIds.length > 0) {
+                const responseCapacidades = await fetch(
+                  `/api/competencias/capacidades?ids=${capacidadesIds.join(',')}`
+                )
+                const capacidadesCompletas: Capacidad[] = await responseCapacidades.json()
+                if (capacidadesCompletas?.length > 0) {
+                  nuevasCapacidadesPorUnidad[index] = capacidadesCompletas
+                }
+              }
+            }
+          } catch (error) {
+            console.error(`Error al cargar desempeños para unidad ${index}:`, error)
+          }
+        }
+      }
+    }
+
+    setUnidades(nuevasUnidades)
+    setCapacidadesPorUnidad((prev) => ({ ...prev, ...nuevasCapacidadesPorUnidad }))
+    setTodosLosDesempeniosPorUnidad((prev) => ({ ...prev, ...nuevosDesempeniosPorUnidad }))
+    setDesempeniosPorUnidad((prev) => ({ ...prev, ...nuevosDesempeniosPorUnidad }))
+  }
+
+  useEffect(() => {
+    if (planAnualExistente?.unidades && Array.isArray(planAnualExistente.unidades)) {
+      void cargarUnidadesDesdePlan(planAnualExistente)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- solo al cargar el plan por id
+  }, [planAnualExistente?.id])
+
+  useEffect(() => {
+    if (!planIdParam || !planAnualExistente?.id) return
+    guardarRetornoModal({
+      planId: planAnualExistente.id,
+      paso: 'planAnual',
+      area: planAnualExistente.area ?? null,
+      areaId: planAnualExistente.areaId ?? null
+    })
+  }, [planIdParam, planAnualExistente?.id, planAnualExistente?.area, planAnualExistente?.areaId])
+
+  const irAHomeTrasGeneracionExito = () => {
+    setShowModalGeneradoExito(false)
+    const pidRaw =
+      planAnualExistente?.id ?? (planIdParam ? parseInt(planIdParam, 10) : NaN)
+    if (!Number.isFinite(pidRaw)) {
+      router.push('/home')
+      return
+    }
+
+    const retornoGuardado = leerRetornoModal()
+    const volverAlModalPlan =
+      Boolean(planIdParam) ||
+      (retornoGuardado?.paso === 'planAnual' && retornoGuardado.planId === pidRaw)
+
+    if (volverAlModalPlan) {
+      const state: ModalReturnState = {
+        planId: pidRaw,
+        paso: 'planAnual',
+        area:
+          retornoGuardado?.area ??
+          formData.area ??
+          planAnualExistente?.area ??
+          null,
+        areaId:
+          retornoGuardado?.areaId ??
+          formData.areaId ??
+          planAnualExistente?.areaId ??
+          null
+      }
+      guardarRetornoModal(state)
+      router.push(linkHomeConModalRetorno(state))
+      return
+    }
+
+    router.push(linkHomeConAreaTab(formData.area, formData.areaId))
+  }
+
   const verificarPlanAnualExistente = async () => {
     try {
       const idRaw = planAnualExistente?.id ?? (planIdParam ? parseInt(planIdParam, 10) : NaN)
-      if (!Number.isFinite(idRaw)) {
-        return null
-      }
-      const response = await fetch(`/api/plan-anual?id=${idRaw}`)
-
-      if (response.ok) {
-        const data = await response.json()
-        const plan = data.planAnual
-        if (plan) {
-          setPlanAnualExistente(plan)
-
-          if (plan.unidades && Array.isArray(plan.unidades)) {
-            setUnidadesExistentes(plan.unidades)
+      if (Number.isFinite(idRaw)) {
+        const response = await fetch(`/api/plan-anual?id=${idRaw}`)
+        if (response.ok) {
+          const data = await response.json()
+          const plan = data.planAnual
+          if (plan) {
+            setPlanAnualExistente(plan)
+            if (plan.unidades && Array.isArray(plan.unidades)) {
+              setUnidadesExistentes(plan.unidades)
+            }
+            return plan
           }
-
-          return plan
         }
       }
+
+      if (formData.areaId && formData.gradoId && formData.nivelId) {
+        const listRes = await fetch('/api/plan-anual')
+        if (listRes.ok) {
+          const { planesAnuales } = await listRes.json()
+          const anio = new Date().getFullYear()
+          const plan = (planesAnuales as { id: number; anio: number; areaId: string; nivelId: string; gradoId: string; unidades?: unknown }[]).find(
+            (p) =>
+              String(p.areaId) === String(formData.areaId) &&
+              String(p.nivelId) === String(formData.nivelId) &&
+              String(p.gradoId) === String(formData.gradoId) &&
+              p.anio === anio
+          )
+          if (plan) {
+            setPlanAnualExistente(plan)
+            if (plan.unidades && Array.isArray(plan.unidades)) {
+              setUnidadesExistentes(plan.unidades)
+            }
+            return plan
+          }
+        }
+      }
+
       return null
     } catch (error) {
       console.error('Error al verificar plan anual existente:', error)
@@ -296,144 +555,14 @@ function ProgramacionAnualContent() {
 
   const handleFase1Submit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (formData.areaId && formData.gradoId && formData.nivelId) {
-      try {
-        const anioPlan = planAnualExistente?.anio ?? new Date().getFullYear()
-        const planAnualIdEdit =
-          planAnualExistente?.id ??
-          (planIdParam ? parseInt(planIdParam, 10) : undefined)
-
-        // Guardar/actualizar los datos de la Fase 1 en la BD
-        const saveResponse = await fetch('/api/plan-anual', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            planAnualId:
-              planAnualIdEdit !== undefined && Number.isFinite(planAnualIdEdit)
-                ? planAnualIdEdit
-                : undefined,
-            anio: anioPlan,
-            formData: formData,
-            unidades: null, // En Fase 1 aún no hay unidades
-            variablesTemplate: null
-          }),
-        })
-
-        if (saveResponse.status === 409) {
-          const errData = await saveResponse.json().catch(() => ({} as { code?: string; planId?: number }))
-          if (errData.code === 'PLAN_ANUAL_DUPLICADO') {
-            setPlanDuplicadoId(
-              typeof errData.planId === 'number' ? errData.planId : null
-            )
-            setShowModalPlanDuplicado(true)
-            return
-          }
-        }
-
-        if (saveResponse.ok) {
-          const saveData = await saveResponse.json()
-          console.log('✅ Datos de Fase 1 guardados/actualizados:', saveData)
-          
-          const nuevoId = saveData.planAnual?.id
-          const planResponse = nuevoId
-            ? await fetch(`/api/plan-anual?id=${nuevoId}`)
-            : null
-          if (planResponse?.ok) {
-            const planData = await planResponse.json()
-            const plan = planData.planAnual
-            if (plan) {
-              setPlanAnualExistente(plan)
-              
-              // Si hay unidades existentes, cargarlas en el formulario
-              if (plan.unidades && Array.isArray(plan.unidades) && plan.unidades.length > 0) {
-                setUnidadesExistentes(plan.unidades)
-                
-                // Cargar las unidades existentes en el formulario
-                const nuevasUnidades = [...unidades]
-                const nuevasCapacidadesPorUnidad: { [key: number]: Capacidad[] } = {}
-                const nuevosDesempeniosPorUnidad: { [key: number]: Desempenio[] } = {}
-                
-                // Cargar datos de cada unidad existente
-                for (let index = 0; index < 9 && index < plan.unidades.length; index++) {
-                  const unidadExistente = plan.unidades[index]
-                  
-                  if (unidadExistente && (unidadExistente.problemaPotencialidad || unidadExistente.producto || 
-                      unidadExistente.desempeniosSeleccionados?.length > 0)) {
-                    
-                    // Actualizar la unidad con los datos existentes
-                    nuevasUnidades[index] = {
-                      ...nuevasUnidades[index],
-                      ...unidadExistente,
-                      // Preservar arrays
-                      competenciasSeleccionadas: unidadExistente.competenciasSeleccionadas || [],
-                      capacidadesSeleccionadas: unidadExistente.capacidadesSeleccionadas || [],
-                      desempeniosSeleccionados: unidadExistente.desempeniosSeleccionados || []
-                    }
-                    
-                    // Si hay desempeños seleccionados, cargarlos desde la BD
-                    if (unidadExistente.desempeniosSeleccionados && 
-                        Array.isArray(unidadExistente.desempeniosSeleccionados) && 
-                        unidadExistente.desempeniosSeleccionados.length > 0) {
-                      
-                      try {
-                        // Cargar desempeños desde la BD
-                        const idsString = unidadExistente.desempeniosSeleccionados.join(',')
-                        const responseDesempenios = await fetch(`/api/competencias/desempenios?ids=${idsString}`)
-                        const desempeniosCompletos: Desempenio[] = await responseDesempenios.json()
-                        
-                        if (desempeniosCompletos && desempeniosCompletos.length > 0) {
-                          nuevosDesempeniosPorUnidad[index] = desempeniosCompletos
-                          
-                          // Obtener las capacidades relacionadas a estos desempeños
-                          const capacidadesIds = [...new Set(desempeniosCompletos.map(d => d.idcapacidad))]
-                          if (capacidadesIds.length > 0) {
-                            const capacidadesIdsString = capacidadesIds.join(',')
-                            const responseCapacidades = await fetch(`/api/competencias/capacidades?ids=${capacidadesIdsString}`)
-                            const capacidadesCompletas: Capacidad[] = await responseCapacidades.json()
-                            
-                            if (capacidadesCompletas && capacidadesCompletas.length > 0) {
-                              nuevasCapacidadesPorUnidad[index] = capacidadesCompletas
-                            }
-                          }
-                          
-                          console.log(`✅ [DEBUG] Cargados ${desempeniosCompletos.length} desempeños para unidad ${index}`)
-                        }
-                      } catch (error) {
-                        console.error(`❌ [DEBUG] Error al cargar desempeños para unidad ${index} desde BD:`, error)
-                      }
-                    }
-                  }
-                }
-                
-                // Actualizar todos los estados con los datos cargados
-                setUnidades(nuevasUnidades)
-                setCapacidadesPorUnidad(prev => ({ ...prev, ...nuevasCapacidadesPorUnidad }))
-                setTodosLosDesempeniosPorUnidad(prev => ({ ...prev, ...nuevosDesempeniosPorUnidad }))
-                setDesempeniosPorUnidad(prev => ({ ...prev, ...nuevosDesempeniosPorUnidad }))
-                
-                console.log('✅ [DEBUG] Datos de Fase 2 cargados desde BD:', {
-                  unidadesCargadas: nuevasUnidades.filter(u => u.problemaPotencialidad || u.producto || u.desempeniosSeleccionados?.length > 0).length
-                })
-              }
-            }
-          }
-          
-          // Continuar a Fase 2 directamente (el modal se mostrará al generar el documento)
-          setFase(2)
-        } else {
-          const errData = await saveResponse.json().catch(() => ({} as { error?: string }))
-          console.error('Error al guardar datos de Fase 1:', errData)
-          alert(errData.error || 'No se pudo guardar la Fase 1.')
-        }
-      } catch (error) {
-        console.error('Error al guardar datos de Fase 1:', error)
-        alert('Error de red al guardar. Intenta de nuevo.')
-      }
-    } else {
+    if (!formData.areaId || !formData.gradoId || !formData.nivelId) {
       alert('Selecciona área, nivel y grado para continuar.')
+      return
     }
+    if (planAnualExistente?.unidades) {
+      await cargarUnidadesDesdePlan(planAnualExistente)
+    }
+    setFase(2)
   }
 
   const handleElegirModoGeneracion = async (modo: 'regenerar' | 'actualizar') => {
@@ -546,6 +675,7 @@ function ProgramacionAnualContent() {
   }
 
   const handleUnidadChange = (index: number, field: keyof Unidad, value: string | boolean | string[]) => {
+    if (esUnidadRegistradaEnPlan(index)) return
     setUnidades(prevUnidades => {
       const newUnidades = [...prevUnidades]
       const unidadActual = newUnidades[index]
@@ -579,7 +709,24 @@ function ProgramacionAnualContent() {
       }
       
       // Para otros campos, actualizar normalmente
-      newUnidades[index] = { ...unidadActual, [field]: value }
+      let actualizada: Unidad = { ...unidadActual, [field]: value }
+      if (
+        index > 0 &&
+        (field === 'problemaPotencialidad' || field === 'producto') &&
+        typeof value === 'string'
+      ) {
+        actualizada = autoSeleccionarCompetenciasEnUnidad(actualizada, competencias)
+      }
+      newUnidades[index] = actualizada
+      if (field === 'problemaPotencialidad' || field === 'producto') {
+        setErroresParUnidad((prev) => ({
+          ...prev,
+          [index]: erroresParProblemaProducto(
+            actualizada.problemaPotencialidad,
+            actualizada.producto
+          )
+        }))
+      }
       return newUnidades
     })
   }
@@ -644,6 +791,7 @@ function ProgramacionAnualContent() {
 
   // Funciones para el modal de competencias/desempeños
   const abrirModalCompetencias = async (index: number) => {
+    if (esUnidadRegistradaEnPlan(index)) return
     const unidad = unidades[index]
     setUnidadModalIndex(index)
     
@@ -927,6 +1075,7 @@ function ProgramacionAnualContent() {
 
   // Función para eliminar un desempeño específico
   const eliminarDesempenio = (unidadIndex: number, desempenioId: string) => {
+    if (esUnidadRegistradaEnPlan(unidadIndex)) return
     const unidad = unidades[unidadIndex]
     if (!unidad) return
 
@@ -975,30 +1124,73 @@ function ProgramacionAnualContent() {
 
   const handleFinalSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    
-    // Validar que al menos la unidad 0 tenga competencia seleccionada
-    const unidad0 = unidades[0]
-    if (!unidad0.competenciaSeleccionada) {
-      alert('⚠️ Por favor, selecciona al menos una competencia en la UNIDAD 0.')
+
+    const nuevosErroresPar: Record<number, ErrorParProblemaProducto> = {}
+    let primerUnidadInvalida: number | null = null
+    let campoFaltante: 'problema' | 'producto' | null = null
+
+    for (let index = 1; index < unidades.length; index++) {
+      if (esUnidadRegistradaEnPlan(index)) continue
+      const u = unidades[index]
+      const err = erroresParProblemaProducto(u.problemaPotencialidad, u.producto)
+      if (err.problema || err.producto) {
+        nuevosErroresPar[index] = err
+        if (primerUnidadInvalida == null) {
+          primerUnidadInvalida = index
+          campoFaltante = err.producto ? 'producto' : 'problema'
+        }
+      }
+    }
+
+    setErroresParUnidad(nuevosErroresPar)
+
+    if (primerUnidadInvalida != null && campoFaltante) {
+      const etiquetaCampo =
+        campoFaltante === 'producto' ? 'Producto' : 'Problema o potencialidad'
+      alert(
+        `⚠️ En la UNIDAD ${primerUnidadInvalida}, si completas uno de los campos debes completar el otro.\n\nFalta: ${etiquetaCampo}.`
+      )
+      const anchorId =
+        campoFaltante === 'problema'
+          ? `problema-${primerUnidadInvalida}`
+          : `producto-${primerUnidadInvalida}`
+      document.getElementById(anchorId)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      return
+    }
+
+    const tieneCompetencia = unidades.slice(1).some(
+      (u) =>
+        !!u.competenciaSeleccionada ||
+        (u.competenciasSeleccionadas?.length ?? 0) > 0
+    )
+    if (!tieneCompetencia) {
+      alert('⚠️ Por favor, selecciona al menos una competencia en alguna unidad.')
       return
     }
     
-    // Verificar si hay un plan anual existente con unidades generadas
     const planExistente = await verificarPlanAnualExistente()
-    
-    if (planExistente && planExistente.unidades && 
-        Array.isArray(planExistente.unidades) && 
-        planExistente.unidades.some((u: any) => 
-          (u.situacionSignificativa && u.situacionSignificativa.trim().length > 0) ||
-          (u.campoTematico && u.campoTematico.trim().length > 0) ||
-          (u.tituloUnidad && u.tituloUnidad.trim().length > 0)
-        )) {
-      // Si hay unidades con datos generados, mostrar modal preguntando qué hacer
-      setShowModalPlanExistente(true)
-      return // No continuar con la generación hasta que el usuario elija
+
+    // Editar plan (?planId=): sin modal; solo generar lo pendiente (ahorra tokens)
+    if (esEdicionPlan) {
+      await handleElegirModoGeneracion('actualizar')
+      return
     }
-    
-    // Si no hay plan existente o no tiene datos generados, continuar con la generación
+
+    const tieneDatosGeneradosIa =
+      planExistente?.unidades &&
+      Array.isArray(planExistente.unidades) &&
+      planExistente.unidades.some(
+        (u: { situacionSignificativa?: string; campoTematico?: string; tituloUnidad?: string }) =>
+          (u.situacionSignificativa?.trim()?.length ?? 0) > 0 ||
+          (u.campoTematico?.trim()?.length ?? 0) > 0 ||
+          (u.tituloUnidad?.trim()?.length ?? 0) > 0
+      )
+
+    if (tieneDatosGeneradosIa) {
+      setShowModalPlanExistente(true)
+      return
+    }
+
     await generarDocumento('regenerar')
   }
 
@@ -1195,6 +1387,7 @@ function ProgramacionAnualContent() {
         // No es crítico, solo actualizamos el estado local
       }
       
+      await verificarPlanAnualExistente()
       setShowModalGeneradoExito(true)
     } catch (error) {
       console.error('Error al generar programación anual:', error)
@@ -1414,13 +1607,27 @@ function ProgramacionAnualContent() {
             </div>
           </div>
 
+          <div className={styles.contextoPlan} aria-live="polite">
+            <span>
+              <strong>Área:</strong>{' '}
+              {formData.area ||
+                areas.find((a) => a.id.toString() === formData.areaId)?.descripcion ||
+                '—'}
+            </span>
+            <span>
+              <strong>Grado:</strong>{' '}
+              {formData.grado ||
+                grados.find((g) => g.id.toString() === formData.gradoId)?.descripcion ||
+                (formData.gradoId ? `${formData.gradoId}° grado` : '—')}
+            </span>
+          </div>
+
           {fase === 1 && (
             <form onSubmit={handleFase1Submit} className={styles.form}>
               <h2 className={styles.phaseTitle}>FASE 1: Selección Personalizada</h2>
               <p className={styles.phaseDescription}>
                 Define el contexto educativo para que la IA genere una planificación alineada a tu realidad.
               </p>
-
               <div className={styles.formGrid}>
                 <div className={styles.formGroup}>
                   <label htmlFor="area">Área <span className={styles.required}>*</span></label>
@@ -1437,7 +1644,7 @@ function ProgramacionAnualContent() {
                     }}
                     className={styles.select}
                     required
-                    disabled={loadingData}
+                    disabled={fase1SoloLectura}
                   >
                     <option value="">Selecciona un área</option>
                     {areas.map(area => (
@@ -1461,7 +1668,7 @@ function ProgramacionAnualContent() {
                     }}
                     className={styles.select}
                     required
-                    disabled={loadingData}
+                    disabled={fase1SoloLectura}
                   >
                     <option value="">Selecciona un grado</option>
                     {grados.map(grado => (
@@ -1481,6 +1688,7 @@ function ProgramacionAnualContent() {
                     onChange={(e) => setFormData({ ...formData, institucion: e.target.value })}
                     className={styles.input}
                     placeholder="Nombre de tu I.E."
+                    disabled={fase1SoloLectura}
                   />
                 </div>
 
@@ -1493,6 +1701,7 @@ function ProgramacionAnualContent() {
                     onChange={(e) => setFormData({ ...formData, docente: e.target.value })}
                     className={styles.input}
                     placeholder="Tu nombre"
+                    disabled={fase1SoloLectura}
                   />
                 </div>
 
@@ -1505,6 +1714,7 @@ function ProgramacionAnualContent() {
                     onChange={(e) => setFormData({ ...formData, dre: e.target.value })}
                     className={styles.input}
                     placeholder="Dirección Regional de Educación"
+                    disabled={fase1SoloLectura}
                   />
                 </div>
 
@@ -1517,6 +1727,7 @@ function ProgramacionAnualContent() {
                     onChange={(e) => setFormData({ ...formData, ugel: e.target.value })}
                     className={styles.input}
                     placeholder="Unidad de Gestión Educativa Local"
+                    disabled={fase1SoloLectura}
                   />
                 </div>
 
@@ -1529,6 +1740,7 @@ function ProgramacionAnualContent() {
                     onChange={(e) => setFormData({ ...formData, director: e.target.value })}
                     className={styles.input}
                     placeholder="Nombre del director"
+                    disabled={fase1SoloLectura}
                   />
                 </div>
 
@@ -1541,6 +1753,7 @@ function ProgramacionAnualContent() {
                     onChange={(e) => setFormData({ ...formData, coordinador: e.target.value })}
                     className={styles.input}
                     placeholder="Nombre del coordinador"
+                    disabled={fase1SoloLectura}
                   />
                 </div>
 
@@ -1558,7 +1771,7 @@ function ProgramacionAnualContent() {
                       })
                     }}
                     className={styles.select}
-                    disabled={loadingData}
+                    disabled={fase1SoloLectura}
                   >
                     <option value="">Selecciona un nivel</option>
                     {niveles.map(nivel => (
@@ -1574,6 +1787,7 @@ function ProgramacionAnualContent() {
                     value={formData.departamento}
                     onChange={(e) => handleDepartamentoChange(e.target.value)}
                     className={styles.select}
+                    disabled={fase1SoloLectura}
                   >
                     <option value="">Selecciona un departamento</option>
                     {getDepartamentos().map(depto => (
@@ -1589,7 +1803,7 @@ function ProgramacionAnualContent() {
                     value={formData.provincia}
                     onChange={(e) => handleProvinciaChange(e.target.value)}
                     className={styles.select}
-                    disabled={!formData.departamento}
+                    disabled={fase1SoloLectura || !formData.departamento}
                   >
                     <option value="">Selecciona una provincia</option>
                     {provinciasDisponibles.map(prov => (
@@ -1605,7 +1819,7 @@ function ProgramacionAnualContent() {
                     value={formData.distrito}
                     onChange={(e) => setFormData({ ...formData, distrito: e.target.value })}
                     className={styles.select}
-                    disabled={!formData.provincia}
+                    disabled={fase1SoloLectura || !formData.provincia}
                   >
                     <option value="">Selecciona un distrito</option>
                     {distritosDisponibles.map(dist => (
@@ -1616,14 +1830,6 @@ function ProgramacionAnualContent() {
               </div>
 
               <div className={styles.buttonGroup}>
-                <button
-                  type="button"
-                  onClick={handleDownload}
-                  className={styles.buttonDownload}
-                  disabled={downloading || !formData.areaId || !formData.gradoId || !formData.nivelId}
-                >
-                  {downloading ? 'Generando documento...' : '📥 Descargar Plantilla'}
-                </button>
                 <button type="submit" className={styles.button}>Continuar a Fase 2</button>
               </div>
             </form>
@@ -1637,160 +1843,83 @@ function ProgramacionAnualContent() {
               </p>
 
               <div className={styles.unidadesContainer}>
-                {unidades.map((unidad, index) => (
-                  <div key={index} className={styles.unidadCard}>
+                {unidades.map((unidad, index) => {
+                  if (index === 0) return null
+                  const unidadRegistrada = esUnidadRegistradaEnPlan(index)
+                  const errPar =
+                    erroresParUnidad[index] ??
+                    (!unidadRegistrada
+                      ? erroresParProblemaProducto(
+                          unidad.problemaPotencialidad,
+                          unidad.producto
+                        )
+                      : {})
+                  return (
+                  <div
+                    key={index}
+                    className={`${styles.unidadCard} ${
+                      unidadRegistrada ? styles.unidadCardRegistrada : ''
+                    }`}
+                  >
                     <h3 className={styles.unidadTitle}>
-                      {index === 0 ? 'UNIDAD 0' : `UNIDAD ${index}`}
+                      UNIDAD {index}
+                      {unidadRegistrada && (
+                        <span className={styles.unidadBadgeRegistrada}>Registrada</span>
+                      )}
                     </h3>
 
                     <div className={styles.formGroup}>
-                      <label htmlFor={`problema-${index}`}>Problema o potencialidad</label>
+                      <label htmlFor={`problema-${index}`}>
+                        Problema o potencialidad
+                        {!unidadRegistrada && unidad.producto.trim() ? (
+                          <span className={styles.required}> *</span>
+                        ) : null}
+                      </label>
                       <input
                         id={`problema-${index}`}
                         type="text"
                         value={unidad.problemaPotencialidad}
                         onChange={(e) => handleUnidadChange(index, 'problemaPotencialidad', e.target.value)}
-                        className={styles.input}
+                        className={`${styles.input} ${errPar.problema ? styles.inputError : ''}`}
                         placeholder="Describe el problema o potencialidad"
+                        disabled={unidadRegistrada}
+                        readOnly={unidadRegistrada}
+                        aria-invalid={errPar.problema || undefined}
                       />
+                      {errPar.problema && (
+                        <p className={styles.fieldErrorHint}>
+                          Obligatorio porque ingresaste el producto.
+                        </p>
+                      )}
                     </div>
 
                     <div className={styles.formGroup}>
-                      <label htmlFor={`producto-${index}`}>Producto</label>
+                      <label htmlFor={`producto-${index}`}>
+                        Producto
+                        {!unidadRegistrada && unidad.problemaPotencialidad.trim() ? (
+                          <span className={styles.required}> *</span>
+                        ) : null}
+                      </label>
                       <input
                         id={`producto-${index}`}
                         type="text"
                         value={unidad.producto}
                         onChange={(e) => handleUnidadChange(index, 'producto', e.target.value)}
-                        className={styles.input}
+                        className={`${styles.input} ${errPar.producto ? styles.inputError : ''}`}
                         placeholder="Ej: Mural informativo, presentación oral, prototipo"
+                        disabled={unidadRegistrada}
+                        readOnly={unidadRegistrada}
+                        aria-invalid={errPar.producto || undefined}
                       />
-                    </div>
-
-                    <div className={styles.formGroup}>
-                      <label>
-                        <input
-                          type="checkbox"
-                          checked={unidad.tieneTituloIA}
-                          onChange={(e) => handleUnidadChange(index, 'tieneTituloIA', e.target.checked)}
-                          className={styles.checkbox}
-                        />
-                        La IA generará el título de la unidad didáctica
-                      </label>
-                      {!unidad.tieneTituloIA && (
-                        <input
-                          type="text"
-                          value={unidad.tituloUnidad}
-                          onChange={(e) => handleUnidadChange(index, 'tituloUnidad', e.target.value)}
-                          className={styles.input}
-                          placeholder="Título de la unidad didáctica"
-                        />
-                      )}
-                      {unidad.tieneTituloIA && (
-                        <p className={styles.helpText}>El título será generado automáticamente por la IA</p>
+                      {errPar.producto && (
+                        <p className={styles.fieldErrorHint}>
+                          Obligatorio porque ingresaste el problema o potencialidad.
+                        </p>
                       )}
                     </div>
 
-                    {/* Selección de Competencias */}
-                    <div className={styles.formGroup} style={{ borderTop: '2px solid #e0e0e0', paddingTop: '20px', marginTop: '20px' }}>
-                      <h4 style={{ marginBottom: '15px', color: '#0066cc', fontSize: '16px' }}>Competencias</h4>
-
-                      <button
-                        type="button"
-                        onClick={() => abrirModalCompetencias(index)}
-                        className={styles.button}
-                        style={{ marginBottom: '15px', width: '100%' }}
-                        disabled={competencias.length === 0}
-                      >
-                        {unidad.competenciaSeleccionada || (unidad.desempeniosSeleccionados?.length ?? 0) > 0
-                          ? '✏️ Editar competencias'
-                          : '➕ Seleccionar competencias'}
-                      </button>
-
-                      {(unidad.competenciasSeleccionadas?.length > 0 || unidad.competenciaSeleccionada) && (
-                        <div style={{ marginBottom: '15px', padding: '12px', backgroundColor: '#f0f9ff', borderRadius: '6px', border: '1px solid #bfdbfe' }}>
-                          <strong style={{ color: '#1e40af', fontSize: '14px', display: 'block', marginBottom: '8px' }}>
-                            Competencia{unidad.competenciasSeleccionadas?.length > 1 ? 's' : ''} seleccionada{unidad.competenciasSeleccionadas?.length > 1 ? 's' : ''}:
-                            {unidad.competenciasSeleccionadas?.length > 0 && (
-                              <span style={{ marginLeft: '8px', color: '#3b82f6', fontWeight: 600 }}>
-                                ({unidad.competenciasSeleccionadas.length})
-                              </span>
-                            )}
-                          </strong>
-                          {unidad.competenciasSeleccionadas?.length > 0 ? (
-                            <ul style={{ margin: 0, paddingLeft: '20px', fontSize: '13px', lineHeight: '1.6' }}>
-                              {unidad.competenciasSeleccionadas.map(id => {
-                                const competencia = competencias.find(c => c.id.toString() === id)
-                                return competencia ? (
-                                  <li key={id} style={{ marginBottom: '6px', display: 'flex', alignItems: 'flex-start', gap: '8px' }}>
-                                    <span style={{ flex: 1 }}>{competencia.descripcion}</span>
-                                    <button
-                                      type="button"
-                                      onClick={() => eliminarCompetencia(index, id)}
-                                      style={{
-                                        background: '#ef4444',
-                                        color: 'white',
-                                        border: 'none',
-                                        borderRadius: '50%',
-                                        width: '20px',
-                                        height: '20px',
-                                        cursor: 'pointer',
-                                        display: 'flex',
-                                        alignItems: 'center',
-                                        justifyContent: 'center',
-                                        fontSize: '12px',
-                                        fontWeight: 'bold',
-                                        padding: 0,
-                                        flexShrink: 0,
-                                        transition: 'background-color 0.2s'
-                                      }}
-                                      onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#dc2626'}
-                                      onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#ef4444'}
-                                      title="Eliminar competencia"
-                                    >
-                                      ×
-                                    </button>
-                                  </li>
-                                ) : null
-                              })}
-                            </ul>
-                          ) : unidad.competenciaSeleccionada ? (
-                            <div style={{ display: 'flex', alignItems: 'flex-start', gap: '8px' }}>
-                              <p style={{ margin: 0, fontSize: '13px', lineHeight: '1.5', flex: 1 }}>
-                                {competencias.find(c => c.id.toString() === unidad.competenciaSeleccionada)?.descripcion || 'Competencia no encontrada'}
-                              </p>
-                              <button
-                                type="button"
-                                onClick={() => eliminarCompetencia(index, unidad.competenciaSeleccionada)}
-                                style={{
-                                  background: '#ef4444',
-                                  color: 'white',
-                                  border: 'none',
-                                  borderRadius: '50%',
-                                  width: '20px',
-                                  height: '20px',
-                                  cursor: 'pointer',
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  justifyContent: 'center',
-                                  fontSize: '12px',
-                                  fontWeight: 'bold',
-                                  padding: 0,
-                                  flexShrink: 0,
-                                  transition: 'background-color 0.2s'
-                                }}
-                                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#dc2626'}
-                                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#ef4444'}
-                                title="Eliminar competencia"
-                              >
-                                ×
-                              </button>
-                            </div>
-                          ) : null}
-                        </div>
-                      )}
-
-                      {(unidad.desempeniosSeleccionados?.length ?? 0) > 0 && (
+                    {(unidad.desempeniosSeleccionados?.length ?? 0) > 0 && (
+                      <div className={styles.formGroup} style={{ marginTop: '12px' }}>
                         <div style={{ padding: '12px', backgroundColor: '#f0fdf4', borderRadius: '6px', border: '1px solid #86efac' }}>
                           <strong style={{ color: '#166534', fontSize: '14px', display: 'block', marginBottom: '8px' }}>
                             Desempeños seleccionados ({unidad.desempeniosSeleccionados.length}/4):
@@ -1810,14 +1939,15 @@ function ProgramacionAnualContent() {
                                   <button
                                     type="button"
                                     onClick={() => eliminarDesempenio(index, id)}
+                                    disabled={unidadRegistrada}
                                     style={{
-                                      background: '#ef4444',
+                                      background: unidadRegistrada ? '#cbd5e1' : '#ef4444',
                                       color: 'white',
                                       border: 'none',
                                       borderRadius: '50%',
                                       width: '20px',
                                       height: '20px',
-                                      cursor: 'pointer',
+                                      cursor: unidadRegistrada ? 'not-allowed' : 'pointer',
                                       display: 'flex',
                                       alignItems: 'center',
                                       justifyContent: 'center',
@@ -1838,17 +1968,11 @@ function ProgramacionAnualContent() {
                             })}
                           </ul>
                         </div>
-                      )}
-
-                      {(!unidad.competenciasSeleccionadas?.length && !unidad.competenciaSeleccionada) &&
-                        (unidad.desempeniosSeleccionados?.length ?? 0) === 0 && (
-                        <p className={styles.helpText} style={{ color: '#666', fontStyle: 'italic', textAlign: 'center', padding: '20px' }}>
-                          Usa el botón de arriba para elegir competencias, capacidades y desempeños (en la UNIDAD 0 necesitas al menos un desempeño para generar).
-                        </p>
-                      )}
-                    </div>
+                      </div>
+                    )}
                   </div>
-                ))}
+                  )
+                })}
               </div>
 
         
@@ -2090,10 +2214,7 @@ function ProgramacionAnualContent() {
             <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
               <button
                 type="button"
-                onClick={() => {
-                  setShowModalGeneradoExito(false)
-                  router.push('/home')
-                }}
+                onClick={irAHomeTrasGeneracionExito}
                 style={{
                   padding: '10px 22px',
                   backgroundColor: '#2563eb',
@@ -2142,7 +2263,7 @@ function ProgramacionAnualContent() {
             boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1)'
           }}>
             <h2 style={{ marginBottom: '20px', color: '#0066cc', fontSize: '24px' }}>
-              Seleccionar Competencias - {unidadModalIndex === 0 ? 'UNIDAD 0' : `UNIDAD ${unidadModalIndex}`}
+              Seleccionar Competencias - UNIDAD {unidadModalIndex}
             </h2>
 
             {/* Competencias */}

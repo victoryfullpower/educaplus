@@ -1,8 +1,72 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { Suspense, useState, useEffect, useRef } from 'react'
+import { useRouter, useSearchParams } from 'next/navigation'
 import Header from '@/components/Header'
 import styles from './unidades-aprendizaje.module.css'
+import { numerosUnidadYaGenerados, obtenerTipoIEDelPlan } from '@/lib/plan-estado-documentos'
+import { linkHomeConAreaTab } from '@/lib/plan-area-tab'
+import { linkSesionesDesdeUnidadPlan } from '@/lib/plan-documentos-links'
+
+type UnidadPlanSlot = {
+  problemaPotencialidad?: string
+  producto?: string
+  situacionSignificativa?: string
+  tituloUnidad?: string
+  campoTematico?: string
+  conocimientos?: string
+  competenciasSeleccionadas?: string[]
+  desempeniosSeleccionados?: string[]
+}
+
+function unidadPlanTieneDatos(u: UnidadPlanSlot | undefined): boolean {
+  if (!u) return false
+  return !!(
+    u.problemaPotencialidad?.trim() ||
+    u.producto?.trim() ||
+    u.situacionSignificativa?.trim() ||
+    u.tituloUnidad?.trim() ||
+    u.campoTematico?.trim() ||
+    u.conocimientos?.trim() ||
+    (u.competenciasSeleccionadas?.length ?? 0) > 0 ||
+    (u.desempeniosSeleccionados?.length ?? 0) > 0
+  )
+}
+
+/** Índices 1–8 presentes en el plan anual (unidad 0 no se lista). */
+function indicesUnidadesDisponiblesPlan(unidades: unknown[]): number[] {
+  const nums: number[] = []
+  for (let i = 1; i <= 8; i++) {
+    if (unidadPlanTieneDatos(unidades[i] as UnidadPlanSlot)) nums.push(i)
+  }
+  return nums
+}
+
+function primeraUnidadConDatos(unidades: unknown[]): number {
+  const disponibles = indicesUnidadesDisponiblesPlan(unidades)
+  return disponibles[0] ?? 1
+}
+
+const UNIDADES_COMBO_DEFAULT = [1, 2, 3, 4, 5, 6, 7, 8]
+
+function semanasDesdeDuracion(duracion: string): number | null {
+  const match = duracion.match(/(\d+)\s*semana/)
+  return match ? parseInt(match[1], 10) : null
+}
+
+/** Último día de la unidad: inicio + N semanas − 1 día (evita desfase por zona horaria). */
+function calcularFechaTermino(fechaInicio: string, duracion: string): string {
+  const semanas = semanasDesdeDuracion(duracion)
+  if (!semanas || !fechaInicio) return ''
+  const inicio = new Date(`${fechaInicio}T12:00:00`)
+  if (Number.isNaN(inicio.getTime())) return ''
+  const fin = new Date(inicio)
+  fin.setDate(fin.getDate() + semanas * 7 - 1)
+  const y = fin.getFullYear()
+  const m = String(fin.getMonth() + 1).padStart(2, '0')
+  const d = String(fin.getDate()).padStart(2, '0')
+  return `${y}-${m}-${d}`
+}
 
 interface Area {
   id: number
@@ -41,8 +105,16 @@ interface Desempenio {
   idcapacidad: number
 }
 
-export default function UnidadesAprendizajePage() {
-  const [fase, setFase] = useState(1)
+function UnidadesAprendizajeContent() {
+  const searchParams = useSearchParams()
+  const planIdParam = searchParams.get('planId')
+  const unidadParam = searchParams.get('unidad')
+  const planPrecargadoRef = useRef(false)
+  const planAnualRef = useRef<{ unidadesArr: unknown[]; tipoIE?: string } | null>(null)
+  const [formularioBloqueadoPlan, setFormularioBloqueadoPlan] = useState(false)
+  const [unidadesCombo, setUnidadesCombo] = useState<number[]>(UNIDADES_COMBO_DEFAULT)
+
+  const bloqueadoPlan = formularioBloqueadoPlan
   const [formData, setFormData] = useState({
     area: '',
     areaId: '',
@@ -75,7 +147,11 @@ export default function UnidadesAprendizajePage() {
     }[]
   })
   const [areaSeleccionada, setAreaSeleccionada] = useState<Area | null>(null)
+  const router = useRouter()
   const [loading, setLoading] = useState(false)
+  const [overlayGeneracion, setOverlayGeneracion] = useState(false)
+  const [generacionCompletada, setGeneracionCompletada] = useState(false)
+  const generandoUnidad = overlayGeneracion && !generacionCompletada
   const [areas, setAreas] = useState<Area[]>([])
   const [grados, setGrados] = useState<Grado[]>([])
   const [competencias, setCompetencias] = useState<Competencia[]>([])
@@ -127,6 +203,123 @@ export default function UnidadesAprendizajePage() {
     loadInitialData()
   }, [])
 
+  // Precarga desde plan anual (enlace desde /home con ?planId=&unidad=)
+  useEffect(() => {
+    if (!planIdParam || loadingData || areas.length === 0 || grados.length === 0) return
+    if (planPrecargadoRef.current) return
+
+    const cargarDesdePlanAnual = async () => {
+      try {
+        const [resPlan, resUnidades] = await Promise.all([
+          fetch(`/api/plan-anual?id=${planIdParam}`),
+          fetch(`/api/unidad-aprendizaje?idplananual=${planIdParam}`)
+        ])
+        if (!resPlan.ok) return
+
+        const data = await resPlan.json()
+        const plan = data.planAnual
+        if (!plan) return
+
+        const unidadesArr = Array.isArray(plan.unidades) ? plan.unidades : []
+
+        const enPlan = indicesUnidadesDisponiblesPlan(unidadesArr)
+        let yaGeneradas = new Set<number>()
+        let tipoIEPlan = ''
+        if (resUnidades.ok) {
+          const dataUa = await resUnidades.json()
+          const unidadesPlanDb = dataUa.unidadesAprendizaje ?? []
+          yaGeneradas = numerosUnidadYaGenerados(unidadesPlanDb)
+          tipoIEPlan = obtenerTipoIEDelPlan(unidadesPlanDb)
+        }
+        if (!tipoIEPlan && plan.areaId && plan.gradoId) {
+          const anioPlan = plan.anio ?? new Date().getFullYear()
+          const resMismoPlan = await fetch(
+            `/api/unidad-aprendizaje?anio=${anioPlan}&areaId=${plan.areaId}&gradoId=${plan.gradoId}`
+          )
+          if (resMismoPlan.ok) {
+            const dataMismo = await resMismoPlan.json()
+            tipoIEPlan = obtenerTipoIEDelPlan(dataMismo.unidadesAprendizaje ?? [])
+          }
+        }
+
+        planAnualRef.current = { unidadesArr, tipoIE: tipoIEPlan || undefined }
+
+        const pendientes = enPlan.filter((n) => !yaGeneradas.has(n))
+        setUnidadesCombo(pendientes)
+
+        let unidadNum = parseInt(unidadParam || '', 10)
+        if (pendientes.length > 0) {
+          if (Number.isNaN(unidadNum) || !pendientes.includes(unidadNum)) {
+            unidadNum = pendientes[0]
+          }
+        } else {
+          unidadNum = enPlan[0] ?? 1
+        }
+
+        const unidadData = unidadesArr[unidadNum] as UnidadPlanSlot | undefined
+
+        const gradoSel = grados.find((g) => String(g.id) === String(plan.gradoId))
+        const areaSel = areas.find((a) => String(a.id) === String(plan.areaId))
+
+        if (areaSel) setAreaSeleccionada(areaSel)
+
+        setFormData((prev) => ({
+          ...prev,
+          area: plan.area || areaSel?.descripcion || prev.area,
+          areaId: plan.areaId ? String(plan.areaId) : prev.areaId,
+          grado: plan.grado || gradoSel?.descripcion || prev.grado,
+          gradoId: plan.gradoId ? String(plan.gradoId) : prev.gradoId,
+          ciclo: gradoSel?.ciclo?.descripcion || prev.ciclo,
+          cicloId: gradoSel?.ciclo?.id?.toString() || prev.cicloId,
+          unidad: String(unidadNum),
+          institucion: plan.institucion || prev.institucion,
+          tipoIE: tipoIEPlan || prev.tipoIE,
+          docente: plan.docente || prev.docente,
+          director: plan.director || prev.director,
+          situacionSignificativa:
+            unidadData?.situacionSignificativa || prev.situacionSignificativa,
+          producto: unidadData?.producto || prev.producto
+        }))
+
+        setDatosDesdePlanAnual({
+          situacionSignificativa: unidadData?.situacionSignificativa ?? null,
+          producto: unidadData?.producto ?? null,
+          tituloUnidad: unidadData?.tituloUnidad ?? null
+        })
+
+        planPrecargadoRef.current = true
+        setFormularioBloqueadoPlan(true)
+      } catch (error) {
+        console.error('Error al precargar desde plan anual:', error)
+      }
+    }
+
+    cargarDesdePlanAnual()
+  }, [planIdParam, unidadParam, loadingData, areas, grados])
+
+  const aplicarUnidadDesdePlan = (unidadNum: number) => {
+    const arr = planAnualRef.current?.unidadesArr
+    if (!arr || unidadNum < 1 || unidadNum > 8) return
+
+    const unidadData = arr[unidadNum] as UnidadPlanSlot | undefined
+    const tipoIEPlan = planAnualRef.current?.tipoIE
+    setFormData((prev) => ({
+      ...prev,
+      unidad: String(unidadNum),
+      situacionSignificativa: unidadData?.situacionSignificativa || '',
+      producto: unidadData?.producto || '',
+      tipoIE: prev.tipoIE || tipoIEPlan || ''
+    }))
+    setDatosDesdePlanAnual({
+      situacionSignificativa: unidadData?.situacionSignificativa ?? null,
+      producto: unidadData?.producto ?? null,
+      tituloUnidad: unidadData?.tituloUnidad ?? null
+    })
+  }
+
+  const opcionesUnidadCombo =
+    planIdParam && unidadesCombo.length > 0 ? unidadesCombo : UNIDADES_COMBO_DEFAULT
+
   // Cargar área seleccionada cuando cambie areaId
   useEffect(() => {
     if (formData.areaId && areas.length > 0) {
@@ -165,6 +358,7 @@ export default function UnidadesAprendizajePage() {
   // Cargar datos de la unidad guardada desde la BD cuando cambien unidad, área o grado
   useEffect(() => {
     const loadUnidadAprendizajeGuardada = async () => {
+      const bloqueado = formularioBloqueadoPlan || Boolean(planIdParam)
       if (formData.unidad && formData.areaId && formData.gradoId) {
         try {
           setLoadingDatosUnidad(true)
@@ -179,54 +373,89 @@ export default function UnidadesAprendizajePage() {
             const dataUnidad = await responseUnidad.json()
             const unidadGuardada = dataUnidad.unidadesAprendizaje?.[0]
             
+            const tipoIEPlan = planIdParam ? planAnualRef.current?.tipoIE : undefined
+
             if (unidadGuardada) {
               console.log('📦 Cargando unidad de aprendizaje guardada:', unidadGuardada)
-              
-              // Setear todos los datos del formData
-              setFormData(prev => ({
-                ...prev,
-                // Datos básicos
-                area: unidadGuardada.area || prev.area,
-                areaId: unidadGuardada.areaId || prev.areaId,
-                grado: unidadGuardada.grado || prev.grado,
-                gradoId: unidadGuardada.gradoId || prev.gradoId,
-                ciclo: unidadGuardada.ciclo || prev.ciclo,
-                cicloId: unidadGuardada.cicloId || prev.cicloId,
-                unidad: unidadGuardada.unidad || prev.unidad,
-                // Datos institucionales
-                institucion: unidadGuardada.institucion || prev.institucion,
-                tipoIE: unidadGuardada.tipoIE || prev.tipoIE,
-                director: unidadGuardada.director || prev.director,
-                docente: unidadGuardada.docente || prev.docente,
-                duracion: unidadGuardada.duracion || prev.duracion,
-                // Datos temporales
-                fechaInicio: unidadGuardada.fechaInicio || prev.fechaInicio,
-                fechaTermino: unidadGuardada.fechaTermino || prev.fechaTermino,
-                // Datos de contenido
-                situacionSignificativa: unidadGuardada.situacionSignificativa || prev.situacionSignificativa,
-                producto: unidadGuardada.producto || prev.producto,
-                propositoUnidad: unidadGuardada.propositoUnidad || prev.propositoUnidad,
-                competencias: Array.isArray(unidadGuardada.competencias) ? unidadGuardada.competencias : prev.competencias,
-                campoTematico: unidadGuardada.campoTematico || prev.campoTematico,
-                numeroSesiones: unidadGuardada.numeroSesiones || prev.numeroSesiones,
-                instrumentoEvaluacion: unidadGuardada.instrumentoEvaluacion || prev.instrumentoEvaluacion,
-                // Sesiones
-                sesiones: Array.isArray(unidadGuardada.sesiones) ? unidadGuardada.sesiones : prev.sesiones
-              }))
-              
-              // También actualizar datos desde plan anual si hay título
-              if (unidadGuardada.tituloUnidad) {
+
+              setFormData((prev) => {
+                const tipoIE =
+                  unidadGuardada.tipoIE || tipoIEPlan || prev.tipoIE
+                if (bloqueado) {
+                  return {
+                    ...prev,
+                    tipoIE,
+                    duracion: unidadGuardada.duracion || prev.duracion,
+                    fechaInicio: unidadGuardada.fechaInicio || prev.fechaInicio,
+                    fechaTermino: unidadGuardada.fechaTermino || prev.fechaTermino,
+                    propositoUnidad: unidadGuardada.propositoUnidad || prev.propositoUnidad,
+                    competencias: Array.isArray(unidadGuardada.competencias)
+                      ? unidadGuardada.competencias
+                      : prev.competencias,
+                    campoTematico: unidadGuardada.campoTematico || prev.campoTematico,
+                    numeroSesiones: unidadGuardada.numeroSesiones || prev.numeroSesiones,
+                    instrumentoEvaluacion:
+                      unidadGuardada.instrumentoEvaluacion || prev.instrumentoEvaluacion,
+                    sesiones: Array.isArray(unidadGuardada.sesiones)
+                      ? unidadGuardada.sesiones
+                      : prev.sesiones
+                  }
+                }
+                return {
+                  ...prev,
+                  area: unidadGuardada.area || prev.area,
+                  areaId: unidadGuardada.areaId || prev.areaId,
+                  grado: unidadGuardada.grado || prev.grado,
+                  gradoId: unidadGuardada.gradoId || prev.gradoId,
+                  ciclo: unidadGuardada.ciclo || prev.ciclo,
+                  cicloId: unidadGuardada.cicloId || prev.cicloId,
+                  unidad: unidadGuardada.unidad || prev.unidad,
+                  institucion: unidadGuardada.institucion || prev.institucion,
+                  tipoIE,
+                  director: unidadGuardada.director || prev.director,
+                  docente: unidadGuardada.docente || prev.docente,
+                  duracion: unidadGuardada.duracion || prev.duracion,
+                  fechaInicio: unidadGuardada.fechaInicio || prev.fechaInicio,
+                  fechaTermino: unidadGuardada.fechaTermino || prev.fechaTermino,
+                  situacionSignificativa:
+                    unidadGuardada.situacionSignificativa || prev.situacionSignificativa,
+                  producto: unidadGuardada.producto || prev.producto,
+                  propositoUnidad: unidadGuardada.propositoUnidad || prev.propositoUnidad,
+                  competencias: Array.isArray(unidadGuardada.competencias)
+                    ? unidadGuardada.competencias
+                    : prev.competencias,
+                  campoTematico: unidadGuardada.campoTematico || prev.campoTematico,
+                  numeroSesiones: unidadGuardada.numeroSesiones || prev.numeroSesiones,
+                  instrumentoEvaluacion:
+                    unidadGuardada.instrumentoEvaluacion || prev.instrumentoEvaluacion,
+                  sesiones: Array.isArray(unidadGuardada.sesiones)
+                    ? unidadGuardada.sesiones
+                    : prev.sesiones
+                }
+              })
+
+              if (!bloqueado && unidadGuardada.tituloUnidad) {
                 setDatosDesdePlanAnual({
                   situacionSignificativa: unidadGuardada.situacionSignificativa,
                   producto: unidadGuardada.producto,
                   tituloUnidad: unidadGuardada.tituloUnidad
                 })
               }
-              
-              return // Salir temprano si encontramos datos guardados
+
+              return
             }
           }
-          
+
+          if (bloqueado) {
+            const tipoIEPlan = planAnualRef.current?.tipoIE
+            if (tipoIEPlan) {
+              setFormData((prev) =>
+                prev.tipoIE ? prev : { ...prev, tipoIE: tipoIEPlan }
+              )
+            }
+            return
+          }
+
           // Si no hay datos guardados, intentar cargar desde plan anual (fallback)
           const response = await fetch(
             `/api/unidades-aprendizaje/datos-unidad?unidad=${formData.unidad}&areaId=${formData.areaId}&gradoId=${formData.gradoId}&anio=${anio}`
@@ -262,7 +491,7 @@ export default function UnidadesAprendizajePage() {
     }
 
     loadUnidadAprendizajeGuardada()
-  }, [formData.unidad, formData.areaId, formData.gradoId])
+  }, [formData.unidad, formData.areaId, formData.gradoId, formularioBloqueadoPlan, planIdParam])
 
   // Calcular número de sesiones basado en semanas y sesionx2
   useEffect(() => {
@@ -275,8 +504,8 @@ export default function UnidadesAprendizajePage() {
     }
 
     // Extraer número de semanas (ej: "1 semana" -> 1)
-    const semanasMatch = formData.duracion.match(/(\d+)\s*semana/)
-    if (!semanasMatch) {
+    const semanas = semanasDesdeDuracion(formData.duracion)
+    if (semanas === null) {
       setFormData(prev => {
         if (prev.sesiones.length === 0) return prev
         return { ...prev, sesiones: [] }
@@ -284,7 +513,6 @@ export default function UnidadesAprendizajePage() {
       return
     }
 
-    const semanas = parseInt(semanasMatch[1], 10)
     const sesionesPorSemana = areaSeleccionada.sesionx2 === true ? 2 : 1
     const totalSesiones = semanas * sesionesPorSemana
 
@@ -306,6 +534,19 @@ export default function UnidadesAprendizajePage() {
       return { ...prev, sesiones: nuevasSesiones }
     })
   }, [formData.duracion, areaSeleccionada?.id, areaSeleccionada?.sesionx2])
+
+  useEffect(() => {
+    if (!formData.duracion || !formData.fechaInicio) {
+      setFormData((prev) =>
+        prev.fechaTermino === '' ? prev : { ...prev, fechaTermino: '' }
+      )
+      return
+    }
+    const nueva = calcularFechaTermino(formData.fechaInicio, formData.duracion)
+    setFormData((prev) =>
+      prev.fechaTermino === nueva ? prev : { ...prev, fechaTermino: nueva }
+    )
+  }, [formData.duracion, formData.fechaInicio])
 
   // Función para obtener el color pastel de una competencia según su índice
   const getCompetenciaColor = (competenciaIndex: number): { bg: string; border: string; text: string } => {
@@ -495,16 +736,19 @@ export default function UnidadesAprendizajePage() {
     cerrarModalSesion()
   }
 
-  const handleFase1Submit = (e: React.FormEvent) => {
+  const handleGenerarSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (formData.unidad && formData.areaId && formData.gradoId && formData.duracion && formData.fechaInicio && formData.fechaTermino) {
-      setFase(2)
+    if (
+      !formData.unidad ||
+      !formData.areaId ||
+      !formData.gradoId ||
+      !formData.duracion ||
+      !formData.fechaInicio ||
+      !formData.fechaTermino
+    ) {
+      return
     }
-  }
-
-  const handleFase2Submit = (e: React.FormEvent) => {
-    e.preventDefault()
-    setFase(3)
+    await handleFinalSubmit(e)
   }
 
   const handleFinalSubmit = async (e: React.FormEvent) => {
@@ -565,10 +809,36 @@ export default function UnidadesAprendizajePage() {
     generarDocumento(false)
   }
 
+  const cerrarOverlayGeneracion = () => {
+    setOverlayGeneracion(false)
+    setGeneracionCompletada(false)
+  }
+
+  const linkSesionesTrasUnidad = () => {
+    if (planIdParam) {
+      return linkSesionesDesdeUnidadPlan(
+        {
+          id: parseInt(planIdParam, 10),
+          areaId: formData.areaId,
+          gradoId: formData.gradoId
+        },
+        formData.unidad
+      )
+    }
+    const params = new URLSearchParams()
+    if (formData.areaId) params.set('areaId', formData.areaId)
+    if (formData.gradoId) params.set('gradoId', formData.gradoId)
+    if (formData.unidad) params.set('unidad', formData.unidad)
+    params.set('desdeUnidad', '1')
+    const q = params.toString()
+    return `/servicios/crear-material/sesiones-fichas${q ? `?${q}` : ''}`
+  }
+
   const generarDocumento = async (forzarRegeneracion: boolean) => {
     setShowModalGeneracion(false)
-    setLoading(true)
-    
+    setOverlayGeneracion(true)
+    setGeneracionCompletada(false)
+
     try {
       const response = await fetch('/api/unidades-aprendizaje/generate-document', {
         method: 'POST',
@@ -610,57 +880,13 @@ export default function UnidadesAprendizajePage() {
       if (blob.size === 0) {
         throw new Error('El archivo generado está vacío')
       }
-      
-      // Crear un enlace de descarga
-      const url = window.URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.style.display = 'none'
-      
-      // Obtener el nombre del archivo del header Content-Disposition
-      const contentDisposition = response.headers.get('Content-Disposition')
-      let fileName = `unidad_${formData.unidad || '0'}_${Date.now()}.docx`
-      if (contentDisposition) {
-        // Intentar extraer el nombre del archivo de diferentes formatos
-        const matches = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/)
-        if (matches && matches[1]) {
-          fileName = decodeURIComponent(matches[1].replace(/['"]/g, ''))
-        } else {
-          // Intentar otro formato
-          const matches2 = contentDisposition.match(/filename\*?=['"]?([^'";]+)['"]?/i)
-          if (matches2 && matches2[1]) {
-            fileName = decodeURIComponent(matches2[1])
-          }
-        }
-      }
-      
-      console.log('💾 Nombre del archivo:', fileName)
-      
-      a.download = fileName
-      document.body.appendChild(a)
-      
-      // Forzar el click
-      a.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }))
-      
-      // También intentar con click() tradicional
-      setTimeout(() => {
-        a.click()
-      }, 10)
-      
-      // Limpiar después de un delay más largo para asegurar que la descarga inicie
-      setTimeout(() => {
-        window.URL.revokeObjectURL(url)
-        if (document.body.contains(a)) {
-          document.body.removeChild(a)
-        }
-      }, 200)
-      
-      console.log('✅ Descarga iniciada')
+
+      console.log('✅ Unidad generada correctamente')
+      setGeneracionCompletada(true)
     } catch (error: any) {
       console.error('❌ Error al generar el documento:', error)
       alert(`Error al generar el documento: ${error.message || 'Error desconocido'}`)
-    } finally {
-      setLoading(false)
+      cerrarOverlayGeneracion()
     }
   }
 
@@ -1035,25 +1261,11 @@ export default function UnidadesAprendizajePage() {
         <div className={styles.container}>
           <h1 className={styles.title}>CREAR UNIDADES DE APRENDIZAJE</h1>
           <p className={styles.subtitle}>
-            Crea unidades de aprendizaje personalizadas en 3 fases
+            Completa el formulario y genera tu unidad de aprendizaje con IA
           </p>
 
-          {/* Progress Bar */}
-          <div className={styles.progressBar}>
-            <div className={`${styles.progressSegment} ${fase >= 1 ? styles.completed : ''}`}>
-              Fase 1
-            </div>
-            <div className={`${styles.progressSegment} ${fase >= 2 ? (fase === 2 ? styles.active : styles.completed) : ''}`}>
-              Fase 2
-            </div>
-            <div className={`${styles.progressSegment} ${fase >= 3 ? styles.active : ''}`}>
-              Fase 3
-            </div>
-          </div>
-
-          {fase === 1 && (
-            <form onSubmit={handleFase1Submit} className={styles.form}>
-              <h2 className={styles.phaseTitle}>FASE 1: Personaliza tu Unidad</h2>
+          <form onSubmit={handleGenerarSubmit} className={styles.form}>
+              <h2 className={styles.phaseTitle}>Personaliza tu Unidad</h2>
               <p className={styles.phaseDescription}>
                 Define el contexto básico para que la IA genere materiales alineados a tu realidad.
               </p>
@@ -1061,18 +1273,43 @@ export default function UnidadesAprendizajePage() {
               <div className={styles.formGrid}>
                 <div className={styles.formGroup}>
                   <label htmlFor="unidad">Unidad <span className={styles.required}>*</span></label>
-                  <select
-                    id="unidad"
-                    value={formData.unidad}
-                    onChange={(e) => setFormData({ ...formData, unidad: e.target.value })}
-                    className={styles.select}
-                    required
-                  >
-                    <option value="">Selecciona una unidad</option>
-                    {[0, 1, 2, 3, 4, 5, 6, 7, 8].map(num => (
-                      <option key={num} value={num}>Unidad {num}</option>
-                    ))}
-                  </select>
+                  {planIdParam && unidadesCombo.length === 0 ? (
+                    <p className={styles.planReadonlyBanner}>
+                      Todas las unidades de este plan ya fueron generadas. Vuelve a Inicio para
+                      ver tu progreso.
+                    </p>
+                  ) : (
+                    <select
+                      id="unidad"
+                      value={formData.unidad}
+                      onChange={(e) => {
+                        const value = e.target.value
+                        if (planIdParam && planAnualRef.current && value) {
+                          aplicarUnidadDesdePlan(parseInt(value, 10))
+                        } else {
+                          setFormData({ ...formData, unidad: value })
+                        }
+                      }}
+                      className={styles.select}
+                      required
+                      disabled={
+                        (!planIdParam && bloqueadoPlan) ||
+                        (planIdParam && unidadesCombo.length === 0)
+                      }
+                    >
+                      <option value="">Selecciona una unidad</option>
+                      {opcionesUnidadCombo.map((num) => (
+                        <option key={num} value={num}>
+                          Unidad {num}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                  {planIdParam && unidadesCombo.length > 0 && (
+                    <p className={styles.helpText}>
+                      Unidades pendientes por generar: {unidadesCombo.join(', ')}
+                    </p>
+                  )}
                 </div>
 
                 <div className={styles.formGroup}>
@@ -1089,9 +1326,9 @@ export default function UnidadesAprendizajePage() {
                         areaId: e.target.value 
                       })
                     }}
-                    className={styles.select}
+                    className={`${styles.select} ${bloqueadoPlan ? styles.fieldReadonly : ''}`}
                     required
-                    disabled={loadingData}
+                    disabled={loadingData || bloqueadoPlan}
                   >
                     <option value="">Selecciona un área</option>
                     {areas.map(area => (
@@ -1115,9 +1352,9 @@ export default function UnidadesAprendizajePage() {
                         cicloId: selectedGrado?.ciclo?.id.toString() || ''
                       })
                     }}
-                    className={styles.select}
+                    className={`${styles.select} ${bloqueadoPlan ? styles.fieldReadonly : ''}`}
                     required
-                    disabled={loadingData}
+                    disabled={loadingData || bloqueadoPlan}
                   >
                     <option value="">Selecciona un grado</option>
                     {grados.map(grado => (
@@ -1133,8 +1370,8 @@ export default function UnidadesAprendizajePage() {
                   <select
                     id="ciclo"
                     value={formData.cicloId}
-                    className={styles.select}
-                    disabled={!formData.gradoId || loadingData}
+                    className={`${styles.select} ${bloqueadoPlan ? styles.fieldReadonly : ''}`}
+                    disabled={!formData.gradoId || loadingData || bloqueadoPlan}
                   >
                     <option value="">Selecciona un grado primero</option>
                     {formData.cicloId && (
@@ -1151,8 +1388,10 @@ export default function UnidadesAprendizajePage() {
                     type="text"
                     value={formData.institucion}
                     onChange={(e) => setFormData({ ...formData, institucion: e.target.value })}
-                    className={styles.input}
+                    className={`${styles.input} ${bloqueadoPlan ? styles.fieldReadonly : ''}`}
                     placeholder="Nombre de tu I.E."
+                    disabled={bloqueadoPlan}
+                    readOnly={bloqueadoPlan}
                   />
                 </div>
 
@@ -1161,7 +1400,13 @@ export default function UnidadesAprendizajePage() {
                   <select
                     id="tipoIE"
                     value={formData.tipoIE}
-                    onChange={(e) => setFormData({ ...formData, tipoIE: e.target.value })}
+                    onChange={(e) => {
+                      const value = e.target.value
+                      if (planAnualRef.current) {
+                        planAnualRef.current.tipoIE = value || undefined
+                      }
+                      setFormData({ ...formData, tipoIE: value })
+                    }}
                     className={styles.select}
                   >
                     <option value="">Selecciona tipo</option>
@@ -1177,8 +1422,10 @@ export default function UnidadesAprendizajePage() {
                     type="text"
                     value={formData.director}
                     onChange={(e) => setFormData({ ...formData, director: e.target.value })}
-                    className={styles.input}
+                    className={`${styles.input} ${bloqueadoPlan ? styles.fieldReadonly : ''}`}
                     placeholder="Nombre del director"
+                    disabled={bloqueadoPlan}
+                    readOnly={bloqueadoPlan}
                   />
                 </div>
 
@@ -1189,8 +1436,10 @@ export default function UnidadesAprendizajePage() {
                     type="text"
                     value={formData.docente}
                     onChange={(e) => setFormData({ ...formData, docente: e.target.value })}
-                    className={styles.input}
+                    className={`${styles.input} ${bloqueadoPlan ? styles.fieldReadonly : ''}`}
                     placeholder="Tu nombre"
+                    disabled={bloqueadoPlan}
+                    readOnly={bloqueadoPlan}
                   />
                 </div>
 
@@ -1221,7 +1470,11 @@ export default function UnidadesAprendizajePage() {
                     onChange={(e) => setFormData({ ...formData, fechaInicio: e.target.value })}
                     className={styles.input}
                     required
+                    disabled={!formData.duracion}
                   />
+                  {!formData.duracion && (
+                    <p className={styles.helpText}>Selecciona primero la duración</p>
+                  )}
                 </div>
 
                 <div className={styles.formGroup}>
@@ -1230,226 +1483,28 @@ export default function UnidadesAprendizajePage() {
                     id="fechaTermino"
                     type="date"
                     value={formData.fechaTermino}
-                    onChange={(e) => setFormData({ ...formData, fechaTermino: e.target.value })}
-                    className={styles.input}
+                    readOnly
+                    disabled
+                    className={`${styles.input} ${styles.fieldReadonly}`}
                     required
-                    min={formData.fechaInicio}
+                    aria-label="Fecha de término calculada automáticamente"
                   />
+                  <p className={styles.helpText}>
+                    {formData.duracion && formData.fechaInicio
+                      ? `Calculada según ${formData.duracion} desde la fecha de inicio`
+                      : 'Se calculará al elegir duración y fecha de inicio'}
+                  </p>
                 </div>
               </div>
 
-              <button type="submit" className={styles.button}>Continuar a Fase 2</button>
+              <button
+                type="submit"
+                className={styles.button}
+                disabled={generandoUnidad || (Boolean(planIdParam) && unidadesCombo.length === 0)}
+              >
+                {generandoUnidad ? 'Generando...' : 'Generar mi unidad con IA'}
+              </button>
             </form>
-          )}
-
-          {fase === 2 && (
-            <form onSubmit={handleFase2Submit} className={styles.form}>
-              <h2 className={styles.phaseTitle}>FASE 2: Define tu unidad de aprendizaje</h2>
-              <p className={styles.phaseDescription}>
-                Aquí decides qué aportar o qué dejar en manos de la IA.
-              </p>
-
-              {formData.unidad && formData.area && (
-                <div className={styles.formGroup}>
-                  <label>Título de la Unidad</label>
-                  <div className={styles.unidadTitle}>
-                    <strong>
-                      {datosDesdePlanAnual.tituloUnidad 
-                        ? datosDesdePlanAnual.tituloUnidad 
-                        : `Unidad ${formData.unidad}: ${formData.area}`}
-                    </strong>
-                  </div>
-                </div>
-              )}
-
-              <div className={styles.formGroup}>
-                <label htmlFor="situacion">Situación Significativa</label>
-                {loadingDatosUnidad ? (
-                  <p className={styles.helpText}>Cargando datos del plan anual...</p>
-                ) : datosDesdePlanAnual.situacionSignificativa ? (
-                  <>
-                    <textarea
-                      id="situacion"
-                      value={formData.situacionSignificativa}
-                      readOnly
-                      disabled
-                      className={styles.input}
-                      rows={6}
-                      style={{ opacity: 0.7, cursor: 'not-allowed', backgroundColor: '#f5f5f5' }}
-                    />
-                    <p className={styles.helpText}>
-                      ✓ Datos cargados desde el plan anual ({formData.situacionSignificativa.length} caracteres)
-                    </p>
-                  </>
-                ) : (
-                  <textarea
-                    id="situacion"
-                    value={formData.situacionSignificativa}
-                    onChange={(e) => setFormData({ ...formData, situacionSignificativa: e.target.value })}
-                    className={styles.input}
-                    placeholder="Título de la situación significativa (opcional - la IA lo genera si no lo escribes)"
-                    rows={4}
-                  />
-                )}
-              </div>
-
-              <div className={styles.formGroup}>
-                <label>
-                  <input
-                    type="checkbox"
-                    checked={formData.generarPropositoIA}
-                    onChange={(e) => setFormData({ ...formData, generarPropositoIA: e.target.checked })}
-                    className={styles.checkbox}
-                  />
-                  Generarlo con IA
-                </label>
-                <label htmlFor="proposito">Propósito de la unidad</label>
-                <textarea
-                  id="proposito"
-                  value={formData.propositoUnidad}
-                  onChange={(e) => setFormData({ ...formData, propositoUnidad: e.target.value })}
-                  className={styles.input}
-                  placeholder="Propósito de la unidad"
-                  rows={4}
-                  disabled={formData.generarPropositoIA}
-                  style={formData.generarPropositoIA ? { opacity: 0.7, cursor: 'not-allowed', backgroundColor: '#f5f5f5' } : {}}
-                />
-                {formData.generarPropositoIA && (
-                  <p className={styles.helpText}>Este campo será generado automáticamente por la IA</p>
-                )}
-              </div>
-
-              <div className={styles.formGroup}>
-                <label htmlFor="producto">Producto Final Esperado (Opcional)</label>
-                {loadingDatosUnidad ? (
-                  <p className={styles.helpText}>Cargando datos del plan anual...</p>
-                ) : datosDesdePlanAnual.producto ? (
-                  <>
-                    <textarea
-                      id="producto"
-                      value={formData.producto}
-                      readOnly
-                      disabled
-                      className={styles.input}
-                      rows={4}
-                      style={{ opacity: 0.7, cursor: 'not-allowed', backgroundColor: '#f5f5f5' }}
-                    />
-                    <p className={styles.helpText}>
-                      ✓ Datos cargados desde el plan anual ({formData.producto.length} caracteres)
-                    </p>
-                  </>
-                ) : (
-                  <>
-                    <textarea
-                      id="producto"
-                      value={formData.producto}
-                      onChange={(e) => setFormData({ ...formData, producto: e.target.value })}
-                      className={styles.input}
-                      placeholder="Ej: Mural informativo, presentación oral, prototipo"
-                      rows={3}
-                    />
-                    <p className={styles.helpText}>Si no se llena, la IA lo propone.</p>
-                  </>
-                )}
-              </div>
-
-              <div className={styles.buttonGroup}>
-                <button
-                  type="button"
-                  onClick={() => setFase(1)}
-                  className={styles.buttonSecondary}
-                >
-                  Volver a Fase 1
-                </button>
-                <button type="submit" className={styles.button}>Continuar a Fase 3</button>
-              </div>
-            </form>
-          )}
-
-          {fase === 3 && (
-            <form onSubmit={handleFinalSubmit} className={styles.form}>
-              <h2 className={styles.phaseTitle}>FASE 3: Detalles técnicos y pedagógicos</h2>
-              <p className={styles.phaseDescription}>
-                Define los elementos curriculares clave para que la IA genere una unidad completa y coherente.
-              </p>
-
-              <div className={styles.formGroup}>
-                <label htmlFor="productoUnidad">Producto Unidad</label>
-                {loadingDatosUnidad ? (
-                  <p className={styles.helpText}>Cargando datos del plan anual...</p>
-                ) : datosDesdePlanAnual.producto ? (
-                  <>
-                    <textarea
-                      id="productoUnidad"
-                      value={formData.producto}
-                      readOnly
-                      disabled
-                      className={styles.input}
-                      rows={6}
-                      style={{ opacity: 0.7, cursor: 'not-allowed', backgroundColor: '#f5f5f5' }}
-                    />
-                    <p className={styles.helpText}>
-                      ✓ Datos cargados desde el plan anual ({formData.producto.length} caracteres)
-                    </p>
-                  </>
-                ) : (
-                  <textarea
-                    id="productoUnidad"
-                    value={formData.producto}
-                    onChange={(e) => setFormData({ ...formData, producto: e.target.value })}
-                    className={styles.input}
-                    placeholder="Describe el producto de la unidad (opcional)"
-                    rows={4}
-                  />
-                )}
-              </div>
-
-              <div className={styles.buttonGroup}>
-                <button
-                  type="button"
-                  onClick={() => setFase(2)}
-                  className={styles.buttonSecondary}
-                >
-                  Volver a Fase 2
-                </button>
-                <button 
-                  type="button" 
-                  onClick={handleGeneratePromptWord} 
-                  className={styles.buttonSecondary}
-                  disabled={loading}
-                >
-                  {loading ? 'Generando...' : 'Prompt dinámico'}
-                </button>
-                <button 
-                  type="button" 
-                  onClick={handleGeneratePrompt} 
-                  className={styles.buttonSecondary}
-                  disabled={loading}
-                >
-                  {loading ? 'Generando...' : 'Generar texto por prompt'}
-                </button>
-                <button 
-                  type="button" 
-                  onClick={handleGeneratePromptEnfoques} 
-                  className={styles.buttonSecondary}
-                  disabled={loading}
-                >
-                  {loading ? 'Generando...' : 'Prompt dinámico enfoques'}
-                </button>
-                <button 
-                  type="button" 
-                  onClick={handleGenerateEnfoquesIA} 
-                  className={styles.buttonSecondary}
-                  disabled={loading}
-                >
-                  {loading ? 'Generando...' : 'IA genera enfoque'}
-                </button>
-                <button type="submit" className={styles.button} disabled={loading}>
-                  {loading ? 'Generando...' : 'Generar mi unidad con IA'}
-                </button>
-              </div>
-            </form>
-          )}
         </div>
 
         {/* Modal de opciones de generación */}
@@ -1860,7 +1915,99 @@ export default function UnidadesAprendizajePage() {
           </div>
         )}
       </main>
+
+      {overlayGeneracion && (
+        <div
+          className={styles.generatingOverlay}
+          role="dialog"
+          aria-modal="true"
+          aria-busy={generandoUnidad}
+        >
+          <div className={styles.generatingOverlayCard}>
+            {generacionCompletada ? (
+              <>
+                <div className={styles.generatingSuccessIcon} aria-hidden>
+                  ✓
+                </div>
+                <h3 className={styles.generatingTitle}>¡Unidad generada!</h3>
+                <p className={styles.generatingText}>
+                  Tu unidad de aprendizaje se guardó correctamente. ¿Qué deseas hacer ahora?
+                </p>
+                <div className={styles.generatingActions}>
+                  <button
+                    type="button"
+                    className={styles.generatingBtnSecondary}
+                    onClick={() => {
+                      cerrarOverlayGeneracion()
+                      router.push(linkHomeConAreaTab(formData.area, formData.areaId))
+                    }}
+                  >
+                    Cerrar
+                  </button>
+                  <button
+                    type="button"
+                    className={styles.generatingBtnPrimary}
+                    onClick={() => {
+                      cerrarOverlayGeneracion()
+                      router.push(linkSesionesTrasUnidad())
+                    }}
+                  >
+                    Ir por sesiones
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className={styles.generatingSpinner} aria-hidden>
+                  <svg width="52" height="52" viewBox="0 0 50 50">
+                    <circle cx="25" cy="25" r="20" fill="none" stroke="#cbd5e1" strokeWidth="6" />
+                    <path
+                      d="M25 5a20 20 0 0 1 20 20"
+                      fill="none"
+                      stroke="#2563eb"
+                      strokeWidth="6"
+                      strokeLinecap="round"
+                    >
+                      <animateTransform
+                        attributeName="transform"
+                        type="rotate"
+                        from="0 25 25"
+                        to="360 25 25"
+                        dur="0.9s"
+                        repeatCount="indefinite"
+                      />
+                    </path>
+                  </svg>
+                </div>
+                <h3 className={styles.generatingTitle}>Generando unidad de aprendizaje…</h3>
+                <p className={styles.generatingText}>
+                  La IA está creando tu documento. Puede tardar varios minutos; no cierres esta
+                  página.
+                </p>
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </>
   )
 }
 
+export default function UnidadesAprendizajePage() {
+  return (
+    <Suspense
+      fallback={
+        <>
+          <Header />
+          <main className={styles.main}>
+            <div className={styles.container}>
+              <p className={styles.subtitle}>Cargando…</p>
+            </div>
+          </main>
+        </>
+      }
+    >
+      <UnidadesAprendizajeContent />
+    </Suspense>
+  )
+}

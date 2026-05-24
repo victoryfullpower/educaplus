@@ -241,6 +241,11 @@ export async function GET(request: NextRequest) {
       where,
       orderBy: {
         fechaHora: 'desc'
+      },
+      include: {
+        listaSesiones: {
+          orderBy: { numeroSesion: 'asc' }
+        }
       }
     })
 

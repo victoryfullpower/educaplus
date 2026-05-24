@@ -1,6 +1,7 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { Suspense, useState, useEffect } from 'react'
+import { useSearchParams } from 'next/navigation'
 import Header from '@/components/Header'
 import styles from './ficha-aprendizaje.module.css'
 
@@ -40,7 +41,14 @@ type UnidadAprendizaje = {
   listaSesiones?: SesionRow[]
 }
 
-export default function FichaAprendizajePage() {
+function FichaAprendizajeContent() {
+  const searchParams = useSearchParams()
+  const planIdParam = searchParams.get('planId')
+  const unidadNumParam = searchParams.get('unidad')
+  const sesionParam = searchParams.get('sesion')
+  const desdeSesionParam = searchParams.get('desdeSesion') === '1'
+  const [bloqueadoDesdeSesion, setBloqueadoDesdeSesion] = useState(false)
+
   const anio = new Date().getFullYear()
   const [planes, setPlanes] = useState<PlanAnual[]>([])
   const [unidades, setUnidades] = useState<UnidadAprendizaje[]>([])
@@ -91,16 +99,22 @@ export default function FichaAprendizajePage() {
   useEffect(() => {
     if (!planId) {
       setUnidades([])
-      setUnidadId('')
-      setUnidadConSesiones(null)
-      setSesionNumero('')
+      if (!desdeSesionParam) {
+        setUnidadId('')
+        setUnidadConSesiones(null)
+        setSesionNumero('')
+      }
       return
     }
+    const preservarSeleccion =
+      desdeSesionParam && planIdParam != null && planId === planIdParam
     const load = async () => {
       setLoadingUnidades(true)
-      setUnidadId('')
-      setUnidadConSesiones(null)
-      setSesionNumero('')
+      if (!preservarSeleccion) {
+        setUnidadId('')
+        setUnidadConSesiones(null)
+        setSesionNumero('')
+      }
       try {
         const res = await fetch(`/api/unidad-aprendizaje?idplananual=${planId}&anio=${anio}`)
         const data = await res.json()
@@ -113,18 +127,20 @@ export default function FichaAprendizajePage() {
       }
     }
     load()
-  }, [planId, anio])
+  }, [planId, anio, desdeSesionParam, planIdParam])
 
   // Al elegir unidad, cargar sesiones (unidad con listaSesiones)
   useEffect(() => {
     if (!unidadId) {
       setUnidadConSesiones(null)
-      setSesionNumero('')
+      if (!desdeSesionParam) setSesionNumero('')
       return
     }
+    const preservarSesion =
+      desdeSesionParam && sesionParam != null && sesionParam !== ''
     const load = async () => {
       setLoadingUnidad(true)
-      setSesionNumero('')
+      if (!preservarSesion) setSesionNumero('')
       try {
         const res = await fetch(`/api/unidad-aprendizaje?id=${unidadId}`)
         const data = await res.json()
@@ -137,8 +153,64 @@ export default function FichaAprendizajePage() {
       }
     }
     load()
-  }, [unidadId])
+  }, [unidadId, desdeSesionParam, sesionParam])
 
+  useEffect(() => {
+    if (!desdeSesionParam || !planIdParam || loadingPlanes) return
+    if (planId !== planIdParam) setPlanId(planIdParam)
+  }, [desdeSesionParam, planIdParam, loadingPlanes, planId])
+
+  useEffect(() => {
+    if (!desdeSesionParam || !planIdParam || !unidadNumParam || loadingUnidades) return
+    const u = unidades.find((x) => String(x.unidad) === String(unidadNumParam))
+    if (u?.id && unidadId !== String(u.id)) setUnidadId(String(u.id))
+  }, [desdeSesionParam, planIdParam, unidadNumParam, unidades, loadingUnidades, unidadId])
+
+  useEffect(() => {
+    if (!desdeSesionParam || !sesionParam || !unidadConSesiones) return
+    const existe = (unidadConSesiones.listaSesiones ?? []).some(
+      (s) => String(s.numeroSesion) === String(sesionParam)
+    )
+    if (existe && sesionNumero !== sesionParam) setSesionNumero(sesionParam)
+  }, [desdeSesionParam, sesionParam, unidadConSesiones, sesionNumero])
+
+  useEffect(() => {
+    if (!desdeSesionParam) {
+      setBloqueadoDesdeSesion(false)
+      return
+    }
+    const listo =
+      planIdParam != null &&
+      unidadNumParam != null &&
+      sesionParam != null &&
+      planId === planIdParam &&
+      Boolean(unidadId) &&
+      String(unidadConSesiones?.unidad) === String(unidadNumParam) &&
+      sesionNumero === sesionParam &&
+      !loadingPlanes &&
+      !loadingUnidades &&
+      !loadingUnidad
+    setBloqueadoDesdeSesion(listo)
+  }, [
+    desdeSesionParam,
+    planIdParam,
+    unidadNumParam,
+    sesionParam,
+    planId,
+    unidadId,
+    unidadConSesiones,
+    sesionNumero,
+    loadingPlanes,
+    loadingUnidades,
+    loadingUnidad
+  ])
+
+  const bloqueado = bloqueadoDesdeSesion
+  const fijarSeleccionDesdePlan =
+    desdeSesionParam &&
+    planIdParam != null &&
+    unidadNumParam != null &&
+    sesionParam != null
   const sesiones = unidadConSesiones?.listaSesiones ?? []
   const sesionSeleccionada = sesiones.find(
     (s) => String(s.numeroSesion) === sesionNumero
@@ -385,7 +457,9 @@ export default function FichaAprendizajePage() {
           <div className={`${styles.form} ${(loading || loadingPrompt || loadingRespuestaPrompt) ? styles.loading : ''}`}>
             <h2 className={styles.phaseTitle}>Fase 1: Selección</h2>
             <p className={styles.phaseDescription}>
-              Selecciona la programación anual, la unidad de aprendizaje y la sesión. El botón &quot;Generar documento&quot; se activará al elegir la sesión.
+              {bloqueado
+                ? 'Programación, unidad y sesión definidas desde tu plan. Revisa y genera la ficha.'
+                : 'Selecciona la programación anual, la unidad de aprendizaje y la sesión. El botón "Generar documento" se activará al elegir la sesión.'}
             </p>
 
             <div className={styles.formGroup}>
@@ -394,8 +468,8 @@ export default function FichaAprendizajePage() {
                 id="plan"
                 value={planId}
                 onChange={(e) => setPlanId(e.target.value)}
-                className={styles.select}
-                disabled={loadingPlanes}
+                className={`${styles.select} ${bloqueado || fijarSeleccionDesdePlan ? styles.fieldReadonly : ''}`}
+                disabled={loadingPlanes || bloqueado || fijarSeleccionDesdePlan}
               >
                 <option value="">Selecciona una programación anual</option>
                 {planes.map((p) => (
@@ -414,8 +488,8 @@ export default function FichaAprendizajePage() {
                 id="unidad"
                 value={unidadId}
                 onChange={(e) => setUnidadId(e.target.value)}
-                className={styles.select}
-                disabled={!planId || loadingUnidades}
+                className={`${styles.select} ${bloqueado || fijarSeleccionDesdePlan ? styles.fieldReadonly : ''}`}
+                disabled={!planId || loadingUnidades || bloqueado || fijarSeleccionDesdePlan}
               >
                 <option value="">Selecciona una unidad de aprendizaje</option>
                 {unidades.map((u) => (
@@ -434,8 +508,8 @@ export default function FichaAprendizajePage() {
                 id="sesion"
                 value={sesionNumero}
                 onChange={(e) => setSesionNumero(e.target.value)}
-                className={styles.select}
-                disabled={!unidadId || loadingUnidad}
+                className={`${styles.select} ${bloqueado || fijarSeleccionDesdePlan ? styles.fieldReadonly : ''}`}
+                disabled={!unidadId || loadingUnidad || bloqueado || fijarSeleccionDesdePlan}
               >
                 <option value="">Selecciona una sesión</option>
                 {sesiones.map((s) => (
@@ -448,22 +522,26 @@ export default function FichaAprendizajePage() {
             </div>
 
             <div className={styles.buttonGroup}>
-              <button
-                type="button"
-                className={styles.buttonSecondary}
-                disabled={!puedeGenerar || loadingPrompt}
-                onClick={handlePromptDinamico}
-              >
-                {loadingPrompt ? 'Generando…' : 'Prompt dinámico'}
-              </button>
-              <button
-                type="button"
-                className={styles.buttonSecondary}
-                disabled={!puedeGenerar || loadingRespuestaPrompt}
-                onClick={handleRespuestaPrompt}
-              >
-                {loadingRespuestaPrompt ? 'Generando…' : 'Respuesta prompt'}
-              </button>
+              {!bloqueado && (
+                <>
+                  <button
+                    type="button"
+                    className={styles.buttonSecondary}
+                    disabled={!puedeGenerar || loadingPrompt}
+                    onClick={handlePromptDinamico}
+                  >
+                    {loadingPrompt ? 'Generando…' : 'Prompt dinámico'}
+                  </button>
+                  <button
+                    type="button"
+                    className={styles.buttonSecondary}
+                    disabled={!puedeGenerar || loadingRespuestaPrompt}
+                    onClick={handleRespuestaPrompt}
+                  >
+                    {loadingRespuestaPrompt ? 'Generando…' : 'Respuesta prompt'}
+                  </button>
+                </>
+              )}
               <button
                 type="button"
                 className={styles.button}
@@ -511,5 +589,24 @@ export default function FichaAprendizajePage() {
         </div>
       )}
     </>
+  )
+}
+
+export default function FichaAprendizajePage() {
+  return (
+    <Suspense
+      fallback={
+        <>
+          <Header />
+          <main className={styles.main}>
+            <div className={styles.container}>
+              <p className={styles.subtitle}>Cargando…</p>
+            </div>
+          </main>
+        </>
+      }
+    >
+      <FichaAprendizajeContent />
+    </Suspense>
   )
 }

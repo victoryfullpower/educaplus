@@ -286,6 +286,7 @@ model Sesion {
   unidadAprendizaje UnidadAprendizaje @relation(fields: [idunidadaprendizaje], references: [id], onDelete: Cascade)
   fichaAprendizaje   FichaAprendizaje?
   rubrica            Rubrica?
+  listaCotejo        ListaCotejo?
 
   @@unique([idunidadaprendizaje, numeroSesion])
   @@map("sesion")
@@ -337,6 +338,31 @@ model FichaAprendizaje {
   sesion Sesion @relation(fields: [idsesion], references: [id], onDelete: Cascade)
 
   @@map("fichaaprendizaje")
+}
+
+/** Instrumento de evaluación — Lista de cotejo (plantilla Word por sesión). */
+model ListaCotejo {
+  id           Int      @id @default(autoincrement())
+  idsesion     Int      @unique @map("idsesion")
+  area         String?  @db.Text
+  grado        String?  @db.Text
+  docente      String?  @db.Text
+  ciclo        String?  @db.Text
+  titulosesion String?  @db.Text @map("titulosesion")
+  proposito    String?  @db.Text
+  competencia  String?  @db.Text
+  capacidades  String?  @db.Text
+  evidencia    String?  @db.Text
+  criterio1    String?  @db.Text
+  criterio2    String?  @db.Text
+  criterio3    String?  @db.Text
+  criterio4    String?  @db.Text
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  sesion Sesion @relation(fields: [idsesion], references: [id], onDelete: Cascade)
+
+  @@map("listacotejo")
 }
 
 model Prompt {

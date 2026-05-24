@@ -155,7 +155,8 @@ export async function POST(request: NextRequest) {
       modoGeneracion = 'regenerar',
       unidadesParaGenerar = [],
       datosExistentes = {},
-      planAnualId
+      planAnualId,
+      soloExportar = false
     } = requestBody
 
     // Algunos clientes envían solo el objeto de formulario (sin wrapper `formData`)
@@ -550,7 +551,7 @@ export async function POST(request: NextRequest) {
     // ===== GUARDAR EN BD DESPUÉS DE QUE LA IA TERMINE DE GENERAR TODO =====
     // Ahora que todas las unidades tienen sus datos generados por IA en unidadesConDatosGenerados,
     // construimos el JSON y guardamos en la BD
-    if (planAnualId || modoGeneracion) {
+    if (!soloExportar && (planAnualId || modoGeneracion)) {
       try {
         const userId = await getUserId(request)
         if (userId) {
@@ -585,35 +586,7 @@ export async function POST(request: NextRequest) {
             }
           }
 
-          if (!planExistente) {
-            planExistente = await prisma.planAnual.findFirst({
-              where: {
-                idusuario: userId,
-                anio: anio
-              }
-            })
-          }
-
-          if (planExistente) {
-            // Construir el JSON de unidades usando directamente unidadesConDatosGenerados
-            // que ya tiene todos los datos generados por IA
-            console.log(`💾 [DEBUG] ===== CONSTRUYENDO JSON DESPUÉS DE GENERACIÓN DE IA =====`)
-            console.log(`   - Total unidades con datos generados: ${unidadesConDatosGenerados.length}`)
-            
-            // VERIFICAR PRIMERO QUE unidadesConDatosGenerados TENGA LOS DATOS
-            console.log(`🔍 [DEBUG] ===== VERIFICANDO unidadesConDatosGenerados ANTES DE CONSTRUIR JSON =====`)
-            unidadesConDatosGenerados.forEach((u, idx) => {
-              console.log(`   - Unidad ${idx} en unidadesConDatosGenerados:`)
-              console.log(`     * tiene situacionSignificativa: ${!!u?.situacionSignificativa}`)
-              console.log(`     * longitud situacionSignificativa: ${u?.situacionSignificativa?.length || 0}`)
-              console.log(`     * tiene campoTematico: ${!!u?.campoTematico}`)
-              console.log(`     * longitud campoTematico: ${u?.campoTematico?.length || 0}`)
-              console.log(`     * situacionSignificativa (primeros 100 chars): ${u?.situacionSignificativa?.substring(0, 100) || '(vacío)'}`)
-              console.log(`     * campoTematico (primeros 100 chars): ${u?.campoTematico?.substring(0, 100) || '(vacío)'}`)
-              console.log(`     * keys: ${u ? Object.keys(u).join(', ') : '(no existe)'}`)
-            })
-            
-            const unidadesParaGuardar = unidadesConDatosGenerados.map((unidadConDatos, idx) => {
+          const unidadesParaGuardar = unidadesConDatosGenerados.map((unidadConDatos, idx) => {
               // VERIFICAR QUE unidadConDatos TENGA LOS DATOS
               if (idx === 0) {
                 console.log(`🔍 [DEBUG] Unidad 0 - unidadConDatos recibido:`)
@@ -653,89 +626,50 @@ export async function POST(request: NextRequest) {
               
               return unidadFinal
             })
-            
-            // Preparar el objeto data completo para actualizar
-            const dataParaActualizar = {
-              // Datos de Fase 1
-              area: formData?.area !== undefined ? formData.area : planExistente.area,
-              areaId: formData?.areaId !== undefined ? formData.areaId : planExistente.areaId,
-              grado: formData?.grado !== undefined ? formData.grado : planExistente.grado,
-              gradoId: formData?.gradoId !== undefined ? formData.gradoId : planExistente.gradoId,
-              institucion: formData?.institucion !== undefined ? formData.institucion : planExistente.institucion,
-              docente: formData?.docente !== undefined ? formData.docente : planExistente.docente,
-              dre: formData?.dre !== undefined ? formData.dre : planExistente.dre,
-              ugel: formData?.ugel !== undefined ? formData.ugel : planExistente.ugel,
-              director: formData?.director !== undefined ? formData.director : planExistente.director,
-              coordinador: formData?.coordinador !== undefined ? formData.coordinador : planExistente.coordinador,
-              nivel: formData?.nivel !== undefined ? formData.nivel : planExistente.nivel,
-              nivelId: formData?.nivelId !== undefined ? formData.nivelId : planExistente.nivelId,
-              departamento: formData?.departamento !== undefined ? formData.departamento : planExistente.departamento,
-              provincia: formData?.provincia !== undefined ? formData.provincia : planExistente.provincia,
-              distrito: formData?.distrito !== undefined ? formData.distrito : planExistente.distrito,
-              // Unidades con datos generados por IA
-              unidades: unidadesParaGuardar,
-              // Variables del template
-              variablesTemplate: {
-                aiProvider: aiProvider,
-                openaiModel: openaiModel
-              }
-            }
-            
-             console.log(`💾 [DEBUG] ===== GUARDANDO EN BD =====`)
-             console.log(`   - unidades[0] tiene situacionSignificativa: ${!!dataParaActualizar.unidades[0]?.situacionSignificativa}`)
-             console.log(`   - unidades[0] tiene campoTematico: ${!!dataParaActualizar.unidades[0]?.campoTematico}`)
-             
-             // IMPRIMIR EL JSON COMPLETO DEL ARRAY DE UNIDADES QUE SE VA A GUARDAR
-             console.log(`📦 [DEBUG] ===== JSON COMPLETO DEL ARRAY DE UNIDADES QUE SE VA A GUARDAR EN BD =====`)
-             console.log(JSON.stringify(dataParaActualizar.unidades, null, 2))
-             
-             // IMPRIMIR EL JSON DE LA UNIDAD 0 ESPECÍFICAMENTE
-             console.log(`📦 [DEBUG] ===== JSON DE UNIDAD 0 QUE SE VA A GUARDAR =====`)
-             console.log(JSON.stringify(dataParaActualizar.unidades[0], null, 2))
-             
-             // Verificar que situacionSignificativa y campoTematico estén presentes
-             console.log(`🔍 [DEBUG] ===== VERIFICACIÓN FINAL ANTES DE GUARDAR =====`)
-             console.log(`   - Total unidades: ${dataParaActualizar.unidades.length}`)
-             dataParaActualizar.unidades.forEach((u: any, idx: number) => {
-               console.log(`   - Unidad ${idx}:`)
-               console.log(`     * tiene situacionSignificativa: ${!!u.situacionSignificativa}`)
-               console.log(`     * longitud situacionSignificativa: ${u.situacionSignificativa?.length || 0}`)
-               console.log(`     * tiene campoTematico: ${!!u.campoTematico}`)
-               console.log(`     * longitud campoTematico: ${u.campoTematico?.length || 0}`)
-               console.log(`     * situacionSignificativa (primeros 100 chars): ${u.situacionSignificativa?.substring(0, 100) || '(vacío)'}`)
-               console.log(`     * campoTematico (primeros 100 chars): ${u.campoTematico?.substring(0, 100) || '(vacío)'}`)
-               console.log(`     * keys del objeto: ${Object.keys(u).join(', ')}`)
-             })
-             
-             // Guardar en la BD
-             console.log(`💾 [DEBUG] Ejecutando prisma.planAnual.update...`)
-             await prisma.planAnual.update({
-               where: { id: planExistente.id },
-               data: dataParaActualizar
-             })
-             
-             console.log(`✅ [DEBUG] Datos guardados en BD correctamente`)
-             
-             // Verificar inmediatamente después de guardar
-             const planVerificado = await prisma.planAnual.findUnique({
-               where: { id: planExistente.id }
-             })
-             
-             if (planVerificado?.unidades && Array.isArray(planVerificado.unidades)) {
-               console.log(`📦 [DEBUG] ===== VERIFICACIÓN POST-GUARDADO: JSON QUE SE GUARDÓ REALMENTE =====`)
-               console.log(JSON.stringify(planVerificado.unidades, null, 2))
-               
-               const unidad0Guardada = planVerificado.unidades[0] as any
-               console.log(`🔍 [DEBUG] ===== VERIFICACIÓN POST-GUARDADO: UNIDAD 0 =====`)
-               console.log(`   - tiene situacionSignificativa: ${!!unidad0Guardada?.situacionSignificativa}`)
-               console.log(`   - longitud situacionSignificativa: ${unidad0Guardada?.situacionSignificativa?.length || 0}`)
-               console.log(`   - tiene campoTematico: ${!!unidad0Guardada?.campoTematico}`)
-               console.log(`   - longitud campoTematico: ${unidad0Guardada?.campoTematico?.length || 0}`)
-               console.log(`   - JSON completo de unidad 0 guardada:`, JSON.stringify(unidad0Guardada, null, 2))
-             } else {
-               console.error(`❌ [DEBUG] ERROR: No se pudo verificar - unidades no es array o no existe`)
-             }
+
+          const base = planExistente
+          const dataParaGuardar = {
+            area: formData?.area ?? base?.area ?? null,
+            areaId: normalizePlanIdField(formData?.areaId ?? base?.areaId),
+            grado: formData?.grado ?? base?.grado ?? null,
+            gradoId: normalizePlanIdField(formData?.gradoId ?? base?.gradoId),
+            institucion: formData?.institucion ?? base?.institucion ?? null,
+            docente: formData?.docente ?? base?.docente ?? null,
+            dre: formData?.dre ?? base?.dre ?? null,
+            ugel: formData?.ugel ?? base?.ugel ?? null,
+            director: formData?.director ?? base?.director ?? null,
+            coordinador: formData?.coordinador ?? base?.coordinador ?? null,
+            nivel: formData?.nivel ?? base?.nivel ?? null,
+            nivelId: normalizePlanIdField(formData?.nivelId ?? base?.nivelId),
+            departamento: formData?.departamento ?? base?.departamento ?? null,
+            provincia: formData?.provincia ?? base?.provincia ?? null,
+            distrito: formData?.distrito ?? base?.distrito ?? null,
+            unidades: unidadesParaGuardar,
+            variablesTemplate: {
+              aiProvider: aiProvider,
+              openaiModel: openaiModel
+            },
+            fechaHora: new Date()
           }
+
+          if (planExistente) {
+            console.log(`💾 [DEBUG] Actualizando plan anual id=${planExistente.id}`)
+            await prisma.planAnual.update({
+              where: { id: planExistente.id },
+              data: dataParaGuardar
+            })
+          } else if (formData) {
+            console.log('💾 [DEBUG] Creando plan anual nuevo al generar documento')
+            await prisma.planAnual.create({
+              data: {
+                idusuario: userId,
+                anio,
+                ...dataParaGuardar
+              }
+            })
+          }
+
+          console.log('✅ [DEBUG] Plan anual guardado en BD')
         }
       } catch (error: any) {
         console.error('❌ [DEBUG] Error al guardar en BD:', error)

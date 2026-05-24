@@ -1,8 +1,17 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { Suspense, useState, useEffect, useRef } from 'react'
+import { useRouter, useSearchParams } from 'next/navigation'
 import Header from '@/components/Header'
 import styles from './sesiones-fichas.module.css'
+import { descargarBlobDesdeResponse } from '@/lib/home-descarga-documento'
+import {
+  guardarRetornoModal,
+  leerRetornoModal,
+  linkHomeConModalRetorno,
+  type ModalReturnPaso
+} from '@/lib/plan-modal-return'
+import { sesionTieneDocumento } from '@/lib/plan-estado-documentos'
 
 interface Area {
   id: number
@@ -56,8 +65,48 @@ interface Desempenio {
   }
 }
 
-export default function SesionesFichasPage() {
-  const [fase, setFase] = useState(1)
+type SesionPendienteItem = {
+  numeroSesion: number
+  titulo: string
+  campoTematico?: string
+  competenciasSeleccionadas: string[]
+  capacidadesSeleccionadas: string[]
+  desempeniosSeleccionados: string[]
+  evidencias?: string
+  criterios?: string
+  instrumentoEvaluacion: string
+  duracion: string
+  fecha: string
+}
+
+type EstadoProgresoSesion = 'pendiente' | 'generando' | 'ok' | 'error'
+
+type ProgresoSesionItem = {
+  numeroSesion: number
+  titulo: string
+  estado: EstadoProgresoSesion
+  mensaje?: string
+}
+
+function SesionesFichasContent() {
+  const router = useRouter()
+  const searchParams = useSearchParams()
+  const areaIdParam = searchParams.get('areaId')
+  const gradoIdParam = searchParams.get('gradoId')
+  const unidadParam = searchParams.get('unidad')
+  const planIdParam = searchParams.get('planId')
+  const volverParam = searchParams.get('volver') as ModalReturnPaso | null
+  const desdeUnidadParam = searchParams.get('desdeUnidad') === '1'
+  const precargadoUnidadRef = useRef(false)
+  const unidadAprendizajeIdRef = useRef<number | null>(null)
+
+  const [bloqueadoDesdeUnidad, setBloqueadoDesdeUnidad] = useState(false)
+  const [sesionesYaGeneradasCount, setSesionesYaGeneradasCount] = useState(0)
+  const [overlayGeneracion, setOverlayGeneracion] = useState(false)
+  const [generacionCompletada, setGeneracionCompletada] = useState(false)
+  const [progresoLote, setProgresoLote] = useState<ProgresoSesionItem[]>([])
+  const [resumenLote, setResumenLote] = useState({ exitosas: 0, fallidas: 0 })
+  const generandoSesion = overlayGeneracion && !generacionCompletada
   const [formData, setFormData] = useState({
     area: '',
     areaId: '',
@@ -75,19 +124,9 @@ export default function SesionesFichasPage() {
     capacidadSeleccionada: '',
     desempeniosSeleccionados: [] as string[],
     tituloSesion: '',
-    continuarUnidad: false,
-    sesionSeleccionada: ''
+    continuarUnidad: false
   })
-  const [sesionesGuardadas, setSesionesGuardadas] = useState<Array<{
-    titulo: string
-    campoTematico?: string
-    competenciasSeleccionadas: string[]
-    capacidadesSeleccionadas: string[]
-    desempeniosSeleccionados: string[]
-    evidencias?: string
-    criterios?: string
-    instrumentoEvaluacion: string
-  }>>([])
+  const [sesionesGuardadas, setSesionesGuardadas] = useState<SesionPendienteItem[]>([])
   const [loadingSesiones, setLoadingSesiones] = useState(false)
   const [loading, setLoading] = useState(false)
   const [loadingPrompt, setLoadingPrompt] = useState(false)
@@ -102,18 +141,6 @@ export default function SesionesFichasPage() {
   const [loadingCapacidades, setLoadingCapacidades] = useState(false)
   const [loadingDesempenios, setLoadingDesempenios] = useState(false)
   const [tableTextFromPrompt, setTableTextFromPrompt] = useState<string>('')
-  const [showModalGeneracion, setShowModalGeneracion] = useState(false)
-  const [contenidoGuardado, setContenidoGuardado] = useState<{
-    motivacion: string
-    saberes: string
-    problematizacion: string
-    proposito: string
-    desarrollo: string
-    desarrolloantes: string
-    desarrollodurante: string
-    desarrollodespues: string
-  } | null>(null)
-
   // Cargar datos iniciales
   useEffect(() => {
     const loadInitialData = async () => {
@@ -138,6 +165,181 @@ export default function SesionesFichasPage() {
 
     loadInitialData()
   }, [])
+
+  // Precarga desde unidad generada (?areaId=&gradoId=&unidad=&desdeUnidad=1)
+  useEffect(() => {
+    if (
+      !desdeUnidadParam ||
+      !areaIdParam ||
+      !gradoIdParam ||
+      !unidadParam ||
+      loadingData ||
+      areas.length === 0 ||
+      grados.length === 0
+    ) {
+      return
+    }
+    if (precargadoUnidadRef.current) return
+
+    const cargarDesdeUnidad = async () => {
+      try {
+        const anio = new Date().getFullYear()
+        const response = await fetch(
+          `/api/unidad-aprendizaje?anio=${anio}&areaId=${areaIdParam}&gradoId=${gradoIdParam}&unidad=${unidadParam}`
+        )
+        if (!response.ok) return
+
+        const data = await response.json()
+        const unidadGuardada =
+          data.unidadesAprendizaje?.[0] ?? (data.id ? data : null)
+        if (!unidadGuardada) return
+
+        if (unidadGuardada.id) {
+          unidadAprendizajeIdRef.current = unidadGuardada.id
+        }
+
+        const gradoSel = grados.find((g) => String(g.id) === String(gradoIdParam))
+        const areaSel = areas.find((a) => String(a.id) === String(areaIdParam))
+
+        setFormData((prev) => ({
+          ...prev,
+          area: unidadGuardada.area || areaSel?.descripcion || prev.area,
+          areaId: String(unidadGuardada.areaId ?? areaIdParam),
+          grado: unidadGuardada.grado || gradoSel?.descripcion || prev.grado,
+          gradoId: String(unidadGuardada.gradoId ?? gradoIdParam),
+          ciclo: unidadGuardada.ciclo || gradoSel?.ciclo?.descripcion || prev.ciclo,
+          cicloId:
+            unidadGuardada.cicloId?.toString() ||
+            gradoSel?.ciclo?.id?.toString() ||
+            prev.cicloId,
+          unidad: String(unidadGuardada.unidad ?? unidadParam),
+          institucion: unidadGuardada.institucion || prev.institucion,
+          director: unidadGuardada.director || prev.director,
+          docente: unidadGuardada.docente || prev.docente,
+          continuarUnidad: true
+        }))
+
+        precargadoUnidadRef.current = true
+        setBloqueadoDesdeUnidad(true)
+      } catch (error) {
+        console.error('Error al precargar sesiones desde unidad:', error)
+      }
+    }
+
+    cargarDesdeUnidad()
+  }, [
+    desdeUnidadParam,
+    areaIdParam,
+    gradoIdParam,
+    unidadParam,
+    loadingData,
+    areas,
+    grados
+  ])
+
+  useEffect(() => {
+    if (!planIdParam) return
+    const id = parseInt(planIdParam, 10)
+    if (Number.isNaN(id)) return
+    const paso: ModalReturnPaso = volverParam === 'unidad' ? 'unidad' : 'sesiones'
+    guardarRetornoModal({
+      planId: id,
+      paso,
+      unidad: formData.unidad || unidadParam,
+      area: formData.area,
+      areaId: formData.areaId || areaIdParam
+    })
+  }, [
+    planIdParam,
+    volverParam,
+    formData.unidad,
+    formData.area,
+    formData.areaId,
+    unidadParam,
+    areaIdParam
+  ])
+
+  const irAlModalOrigen = () => {
+    const guardado = leerRetornoModal()
+    const id = planIdParam ? parseInt(planIdParam, 10) : NaN
+    const paso: ModalReturnPaso = volverParam === 'unidad' ? 'unidad' : 'sesiones'
+    const areaNombre =
+      formData.area?.trim() ||
+      areas.find((a) => String(a.id) === String(formData.areaId || areaIdParam))
+        ?.descripcion ||
+      ''
+    const retorno =
+      guardado != null
+        ? {
+            ...guardado,
+            area: guardado.area || areaNombre || undefined,
+            areaId: guardado.areaId || formData.areaId || areaIdParam,
+            unidad: guardado.unidad || formData.unidad || unidadParam
+          }
+        : !Number.isNaN(id)
+          ? {
+              planId: id,
+              paso,
+              unidad: formData.unidad || unidadParam,
+              area: areaNombre,
+              areaId: formData.areaId || areaIdParam
+            }
+          : null
+    if (retorno) {
+      router.push(linkHomeConModalRetorno(retorno))
+      return
+    }
+    router.push('/home')
+  }
+
+  const bloqueado = bloqueadoDesdeUnidad
+  const modoSecuenciaUnidad = formData.continuarUnidad || bloqueadoDesdeUnidad
+  const sesionesPendientesConfiguradas =
+    sesionesGuardadas.length > 0 &&
+    sesionesGuardadas.every((s) => s.duracion && s.fecha)
+  const puedeGenerarLote =
+    modoSecuenciaUnidad &&
+    Boolean(formData.areaId && formData.gradoId && formData.unidad) &&
+    sesionesPendientesConfiguradas
+
+  const actualizarSesionPendiente = (
+    numeroSesion: number,
+    campo: 'duracion' | 'fecha',
+    valor: string
+  ) => {
+    setSesionesGuardadas((prev) =>
+      prev.map((s) => (s.numeroSesion === numeroSesion ? { ...s, [campo]: valor } : s))
+    )
+  }
+
+  const claseEstadoProgreso = (estado: EstadoProgresoSesion) => {
+    switch (estado) {
+      case 'ok':
+        return styles.progresoEstado_ok
+      case 'error':
+        return styles.progresoEstado_error
+      case 'generando':
+        return styles.progresoEstado_generando
+      default:
+        return styles.progresoEstado_pendiente
+    }
+  }
+
+  const iconoEstadoProgreso = (estado: EstadoProgresoSesion) => {
+    if (estado === 'generando') {
+      return <span className={styles.progresoSpinnerMini} aria-label="Generando" />
+    }
+    if (estado === 'ok') {
+      return <span className={styles.progresoIconoOk} aria-hidden>✓</span>
+    }
+    if (estado === 'error') {
+      return <span className={styles.progresoIconoError} aria-hidden>✕</span>
+    }
+    return <span className={styles.progresoIconoPendiente} aria-hidden>○</span>
+  }
+
+  const sesionEnCurso = progresoLote.find((p) => p.estado === 'generando')
+  const sesionesCompletadas = progresoLote.filter((p) => p.estado === 'ok').length
 
   // Cargar competencias cuando cambien área y grado
   useEffect(() => {
@@ -231,7 +433,13 @@ export default function SesionesFichasPage() {
   // Cargar sesiones guardadas cuando se seleccione área, grado y unidad
   useEffect(() => {
     const loadSesionesGuardadas = async () => {
-      if (formData.continuarUnidad && formData.areaId && formData.gradoId && formData.unidad) {
+      const debeCargar =
+        (formData.continuarUnidad || bloqueadoDesdeUnidad) &&
+        formData.areaId &&
+        formData.gradoId &&
+        formData.unidad
+
+      if (debeCargar) {
         try {
           setLoadingSesiones(true)
           const anio = new Date().getFullYear()
@@ -250,15 +458,65 @@ export default function SesionesFichasPage() {
             } else if (data && data.id) {
               unidadData = data
             }
+
+            if (unidadData?.id) {
+              unidadAprendizajeIdRef.current = unidadData.id
+            }
             
             if (unidadData && unidadData.sesiones && Array.isArray(unidadData.sesiones)) {
-              // Filtrar sesiones que tengan datos válidos
-              const sesionesConDatos = unidadData.sesiones.filter((s: any) => 
-                s && (s.titulo || (Array.isArray(s.competenciasSeleccionadas) && s.competenciasSeleccionadas.length > 0))
+              const numsGenerados = new Set<number>(
+                (unidadData.listaSesiones || [])
+                  .filter((s: { titulo?: string; motivacion?: string; desarrollo?: string; proposito?: string; saberes?: string }) =>
+                    sesionTieneDocumento(s)
+                  )
+                  .map((s: { numeroSesion: number }) => s.numeroSesion)
+              )
+              setSesionesYaGeneradasCount(numsGenerados.size)
+
+              const sesionesConDatos: SesionPendienteItem[] = []
+              unidadData.sesiones.forEach(
+                (
+                  s: {
+                    titulo?: string
+                    competenciasSeleccionadas?: string[]
+                    capacidadesSeleccionadas?: string[]
+                    desempeniosSeleccionados?: string[]
+                    campoTematico?: string
+                    evidencias?: string
+                    criterios?: string
+                    instrumentoEvaluacion?: string
+                  },
+                  index: number
+                ) => {
+                  const numeroSesion = index + 1
+                  if (
+                    !s ||
+                    (!s.titulo &&
+                      !(Array.isArray(s.competenciasSeleccionadas) &&
+                        s.competenciasSeleccionadas.length > 0))
+                  ) {
+                    return
+                  }
+                  if (numsGenerados.has(numeroSesion)) return
+                  sesionesConDatos.push({
+                    numeroSesion,
+                    titulo: s.titulo || '',
+                    campoTematico: s.campoTematico,
+                    competenciasSeleccionadas: s.competenciasSeleccionadas || [],
+                    capacidadesSeleccionadas: s.capacidadesSeleccionadas || [],
+                    desempeniosSeleccionados: s.desempeniosSeleccionados || [],
+                    evidencias: s.evidencias,
+                    criterios: s.criterios,
+                    instrumentoEvaluacion: s.instrumentoEvaluacion || '',
+                    duracion: '',
+                    fecha: ''
+                  })
+                }
               )
               setSesionesGuardadas(sesionesConDatos)
             } else {
               setSesionesGuardadas([])
+              setSesionesYaGeneradasCount(0)
             }
           } else {
             setSesionesGuardadas([])
@@ -271,251 +529,174 @@ export default function SesionesFichasPage() {
         }
       } else {
         setSesionesGuardadas([])
+        setSesionesYaGeneradasCount(0)
       }
     }
 
     loadSesionesGuardadas()
-  }, [formData.continuarUnidad, formData.areaId, formData.gradoId, formData.unidad])
+  }, [
+    formData.continuarUnidad,
+    formData.areaId,
+    formData.gradoId,
+    formData.unidad,
+    bloqueadoDesdeUnidad
+  ])
 
-  // Cargar datos de la sesión seleccionada
-  useEffect(() => {
-    if (formData.continuarUnidad && formData.sesionSeleccionada && sesionesGuardadas.length > 0) {
-      const sesionIndex = parseInt(formData.sesionSeleccionada, 10)
-      const sesion = sesionesGuardadas[sesionIndex]
-      
-      if (sesion) {
-        // Las sesiones guardadas tienen descripciones, no IDs
-        // Necesitamos buscar los IDs correspondientes a las descripciones
-        const buscarIdCompetencia = async (descripcionCompetencia: string) => {
-          if (!descripcionCompetencia || !formData.areaId || !formData.gradoId) return ''
-          
-          try {
-            const response = await fetch(
-              `/api/competencias/competencias?idarea=${formData.areaId}&idgrado=${formData.gradoId}`
-            )
-            const competenciasData = await response.json()
-            const competenciaEncontrada = competenciasData.find((c: Competencia) => 
-              c.descripcion === descripcionCompetencia || c.descripcion.includes(descripcionCompetencia) || descripcionCompetencia.includes(c.descripcion)
-            )
-            return competenciaEncontrada ? competenciaEncontrada.id.toString() : ''
-          } catch (error) {
-            console.error('[SESIONES] Error al buscar competencia:', error)
-            return ''
-          }
+  const cerrarOverlayGeneracion = () => {
+    setOverlayGeneracion(false)
+    setGeneracionCompletada(false)
+    setProgresoLote([])
+    setResumenLote({ exitosas: 0, fallidas: 0 })
+  }
+
+  const generarUnaSesion = async (sesion: SesionPendienteItem) => {
+    const sesionData = {
+      numeroSesion: String(sesion.numeroSesion),
+      titulo: sesion.titulo || '',
+      competenciasSeleccionadas: sesion.competenciasSeleccionadas || [],
+      capacidadesSeleccionadas: sesion.capacidadesSeleccionadas || [],
+      desempeniosSeleccionados: sesion.desempeniosSeleccionados || [],
+      campoTematico: sesion.campoTematico || '',
+      evidencias: sesion.evidencias || '',
+      criterios: sesion.criterios || ''
+    }
+    const unidadData = {
+      areaId: formData.areaId,
+      gradoId: formData.gradoId,
+      unidad: formData.unidad
+    }
+    const body: Record<string, unknown> = {
+      formData: {
+        institucion: formData.institucion,
+        area: formData.area,
+        grado: formData.grado,
+        gradoId: formData.gradoId,
+        areaId: formData.areaId,
+        unidad: formData.unidad,
+        ciclo: formData.ciclo,
+        director: formData.director,
+        docente: formData.docente,
+        fecha: sesion.fecha,
+        duracion: sesion.duracion,
+        tituloSesion: sesion.titulo,
+        continuarUnidad: formData.continuarUnidad
+      },
+      sesionData,
+      unidadData,
+      tableTextFromPrompt: tableTextFromPrompt || undefined
+    }
+    const response = await fetch('/api/sesiones-fichas/generate-document', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    })
+    const areaSlug = (formData.area || 'documento')
+      .replace(/\s+/g, '_')
+      .replace(/[^a-zA-Z0-9_]/g, '')
+    const nombreFallback = `SESION_${areaSlug}_U${formData.unidad || '0'}_S${sesion.numeroSesion}.docx`
+    await descargarBlobDesdeResponse(response, nombreFallback)
+  }
+
+  const generarLoteSesiones = async () => {
+    const pendientes = [...sesionesGuardadas]
+    if (pendientes.length === 0) return
+
+    setOverlayGeneracion(true)
+    setGeneracionCompletada(false)
+    setProgresoLote(
+      pendientes.map((s) => ({
+        numeroSesion: s.numeroSesion,
+        titulo: s.titulo || 'Sin título',
+        estado: 'pendiente' as const
+      }))
+    )
+
+    const numerosExitosos: number[] = []
+    let exitosas = 0
+    let fallidas = 0
+
+    for (let i = 0; i < pendientes.length; i++) {
+      const sesion = pendientes[i]
+      setProgresoLote((prev) =>
+        prev.map((p) =>
+          p.numeroSesion === sesion.numeroSesion ? { ...p, estado: 'generando', mensaje: undefined } : p
+        )
+      )
+      try {
+        await generarUnaSesion(sesion)
+        exitosas += 1
+        numerosExitosos.push(sesion.numeroSesion)
+        setProgresoLote((prev) =>
+          prev.map((p) =>
+            p.numeroSesion === sesion.numeroSesion ? { ...p, estado: 'ok', mensaje: undefined } : p
+          )
+        )
+        if (i < pendientes.length - 1) {
+          await new Promise((resolve) => setTimeout(resolve, 500))
         }
-        
-        const buscarIdCapacidad = async (descripcionCapacidad: string, idcompetencia: string) => {
-          if (!descripcionCapacidad || !idcompetencia) return ''
-          
-          try {
-            const response = await fetch(
-              `/api/competencias/capacidades?idcompetencia=${idcompetencia}`
-            )
-            const capacidadesData = await response.json()
-            const capacidadEncontrada = capacidadesData.find((c: Capacidad) => 
-              c.descripcion === descripcionCapacidad || c.descripcion.includes(descripcionCapacidad) || descripcionCapacidad.includes(c.descripcion)
-            )
-            return capacidadEncontrada ? capacidadEncontrada.id.toString() : ''
-          } catch (error) {
-            console.error('[SESIONES] Error al buscar capacidad:', error)
-            return ''
-          }
-        }
-        
-        const buscarIdsDesempenios = async (descripcionesDesempenios: string[], idcapacidad: string) => {
-          if (!descripcionesDesempenios || descripcionesDesempenios.length === 0 || !idcapacidad) return []
-          
-          try {
-            const response = await fetch(
-              `/api/competencias/desempenios?idcapacidad=${idcapacidad}`
-            )
-            const desempeniosData = await response.json()
-            const idsEncontrados: string[] = []
-            
-            descripcionesDesempenios.forEach((desc: string) => {
-              const desempenioEncontrado = desempeniosData.find((d: Desempenio) => 
-                d.descripcion === desc || d.descripcion.includes(desc) || desc.includes(d.descripcion)
-              )
-              if (desempenioEncontrado) {
-                idsEncontrados.push(desempenioEncontrado.id.toString())
-              }
-            })
-            
-            return idsEncontrados
-          } catch (error) {
-            console.error('[SESIONES] Error al buscar desempeños:', error)
-            return []
-          }
-        }
-        
-        // Cargar los datos de la sesión seleccionada
-        const cargarDatosSesion = async () => {
-          const primeraCompetencia = sesion.competenciasSeleccionadas && sesion.competenciasSeleccionadas.length > 0 
-            ? sesion.competenciasSeleccionadas[0] 
-            : ''
-          
-          const primeraCapacidad = sesion.capacidadesSeleccionadas && sesion.capacidadesSeleccionadas.length > 0
-            ? sesion.capacidadesSeleccionadas[0]
-            : ''
-          
-          // Buscar IDs
-          const idCompetencia = await buscarIdCompetencia(primeraCompetencia)
-          const idCapacidad = idCompetencia ? await buscarIdCapacidad(primeraCapacidad, idCompetencia) : ''
-          const idsDesempenios = idCapacidad && sesion.desempeniosSeleccionados 
-            ? await buscarIdsDesempenios(sesion.desempeniosSeleccionados, idCapacidad)
-            : []
-          
-          setFormData(prev => ({
-            ...prev,
-            tituloSesion: sesion.titulo || '',
-            competenciaSeleccionada: idCompetencia,
-            capacidadSeleccionada: idCapacidad,
-            desempeniosSeleccionados: idsDesempenios
-          }))
-        }
-        
-        cargarDatosSesion()
+      } catch (error) {
+        fallidas += 1
+        const mensaje =
+          error instanceof Error ? error.message : 'Error al generar el documento'
+        setProgresoLote((prev) =>
+          prev.map((p) =>
+            p.numeroSesion === sesion.numeroSesion ? { ...p, estado: 'error', mensaje } : p
+          )
+        )
       }
     }
-  }, [formData.sesionSeleccionada, sesionesGuardadas, formData.continuarUnidad, formData.areaId, formData.gradoId])
+
+    if (numerosExitosos.length > 0) {
+      setSesionesGuardadas((prev) =>
+        prev.filter((s) => !numerosExitosos.includes(s.numeroSesion))
+      )
+      setSesionesYaGeneradasCount((c) => c + numerosExitosos.length)
+    }
+    setResumenLote({ exitosas, fallidas })
+    setGeneracionCompletada(true)
+  }
+
+  const verificarYGenerarSesion = async () => {
+    if (!formData.areaId || !formData.gradoId) return
+    if (!modoSecuenciaUnidad) {
+      alert(
+        'Activa "Continuar con secuencia de una unidad ya generada" y selecciona la unidad para generar sesiones.'
+      )
+      return
+    }
+    if (sesionesGuardadas.length === 0) {
+      alert('No hay sesiones pendientes para generar.')
+      return
+    }
+    const sinConfigurar = sesionesGuardadas.filter((s) => !s.duracion || !s.fecha)
+    if (sinConfigurar.length > 0) {
+      alert(
+        `Configura duración y fecha para todas las sesiones pendientes (${sinConfigurar.length} sin completar).`
+      )
+      return
+    }
+    await generarLoteSesiones()
+  }
 
   const handleFase1Submit = (e: React.FormEvent) => {
     e.preventDefault()
-    if (formData.areaId && formData.gradoId) {
-      setFase(2)
-    }
+    void verificarYGenerarSesion()
   }
 
-  const numeroSesionActual = formData.continuarUnidad && formData.sesionSeleccionada
-    ? parseInt(formData.sesionSeleccionada, 10) + 1
-    : 1
-
-  const generarDocumento = async (usarContenidoBD: boolean) => {
-    setShowModalGeneracion(false)
-    setLoading(true)
-    try {
-      let sesionData = null
-      let unidadData = null
-      if (formData.continuarUnidad && formData.sesionSeleccionada && sesionesGuardadas.length > 0) {
-        const sesionIndex = parseInt(formData.sesionSeleccionada, 10)
-        const sesion = sesionesGuardadas[sesionIndex]
-        if (sesion) {
-          sesionData = {
-            numeroSesion: (sesionIndex + 1).toString(),
-            titulo: sesion.titulo || '',
-            competenciasSeleccionadas: sesion.competenciasSeleccionadas || [],
-            capacidadesSeleccionadas: sesion.capacidadesSeleccionadas || [],
-            desempeniosSeleccionados: sesion.desempeniosSeleccionados || [],
-            campoTematico: sesion.campoTematico || '',
-            evidencias: sesion.evidencias || '',
-            criterios: sesion.criterios || ''
-          }
-          unidadData = { areaId: formData.areaId, gradoId: formData.gradoId, unidad: formData.unidad }
-        }
-      }
-      const body: Record<string, unknown> = {
-        formData: {
-          institucion: formData.institucion,
-          area: formData.area,
-          grado: formData.grado,
-          gradoId: formData.gradoId,
-          areaId: formData.areaId,
-          unidad: formData.unidad,
-          ciclo: formData.ciclo,
-          director: formData.director,
-          docente: formData.docente,
-          fecha: formData.fecha,
-          duracion: formData.duracion,
-          tituloSesion: formData.tituloSesion,
-          continuarUnidad: formData.continuarUnidad
-        },
-        sesionData,
-        unidadData,
-        tableTextFromPrompt: tableTextFromPrompt || undefined
-      }
-      if (usarContenidoBD && contenidoGuardado) {
-        body.contenidoDesdeBD = contenidoGuardado
-      }
-      const response = await fetch('/api/sesiones-fichas/generate-document', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
-      })
-      if (!response.ok) {
-        const error = await response.json()
-        throw new Error(error.error || 'Error al generar el documento')
-      }
-      const blob = await response.blob()
-      const url = window.URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `SESION_${formData.area || 'documento'}_${Date.now()}.docx`
-      document.body.appendChild(a)
-      a.click()
-      document.body.removeChild(a)
-      window.URL.revokeObjectURL(url)
-    } catch (error) {
-      console.error('Error al generar documento:', error)
-      alert(error instanceof Error ? error.message : 'Error al generar el documento. Por favor intenta de nuevo.')
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const handleFase2Submit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!formData.continuarUnidad) {
-      if (!formData.competenciaSeleccionada || !formData.capacidadSeleccionada) {
-        alert('Por favor selecciona una competencia y una capacidad')
-        return
-      }
-      if (formData.desempeniosSeleccionados.length === 0) {
-        alert('Por favor selecciona al menos un desempeño')
-        return
-      }
-    } else {
-      if (!formData.sesionSeleccionada) {
-        alert('Por favor selecciona una sesión')
-        return
-      }
-    }
-    try {
-      const params = new URLSearchParams({
-        areaId: String(formData.areaId || ''),
-        gradoId: String(formData.gradoId || ''),
-        unidad: String(formData.unidad || ''),
-        numeroSesion: String(numeroSesionActual)
-      })
-      const checkRes = await fetch(`/api/sesiones-fichas/sesion-contenido?${params}`)
-      if (checkRes.ok) {
-        const data = await checkRes.json()
-        if (data.existe && data.contenido) {
-          setContenidoGuardado(data.contenido)
-          setShowModalGeneracion(true)
-          return
-        }
-      }
-    } catch (_) {
-      // Si falla la consulta, continuar y generar con IA
-    }
-    generarDocumento(false)
-  }
+  const primeraSesionPendiente = sesionesGuardadas[0] ?? null
 
   const handlePromptDinamico = async () => {
     setLoadingPrompt(true)
     try {
       let sesionData = null
-      if (formData.continuarUnidad && formData.sesionSeleccionada && sesionesGuardadas.length > 0) {
-        const sesionIndex = parseInt(formData.sesionSeleccionada, 10)
-        const sesion = sesionesGuardadas[sesionIndex]
-        if (sesion) {
-          sesionData = {
-            numeroSesion: (sesionIndex + 1).toString(),
-            titulo: sesion.titulo || '',
-            competenciasSeleccionadas: sesion.competenciasSeleccionadas || [],
-            capacidadesSeleccionadas: sesion.capacidadesSeleccionadas || [],
-            desempeniosSeleccionados: sesion.desempeniosSeleccionados || []
-          }
+      if (modoSecuenciaUnidad && primeraSesionPendiente) {
+        const sesion = primeraSesionPendiente
+        sesionData = {
+          numeroSesion: String(sesion.numeroSesion),
+          titulo: sesion.titulo || '',
+          competenciasSeleccionadas: sesion.competenciasSeleccionadas || [],
+          capacidadesSeleccionadas: sesion.capacidadesSeleccionadas || [],
+          desempeniosSeleccionados: sesion.desempeniosSeleccionados || []
         }
       } else {
         sesionData = { numeroSesion: '1', titulo: formData.tituloSesion || '', competenciasSeleccionadas: [], capacidadesSeleccionadas: [], desempeniosSeleccionados: [] }
@@ -528,8 +709,8 @@ export default function SesionesFichasPage() {
             area: formData.area,
             grado: formData.grado,
             ciclo: formData.ciclo,
-            duracion: formData.duracion,
-            tituloSesion: formData.tituloSesion,
+            duracion: primeraSesionPendiente?.duracion || formData.duracion,
+            tituloSesion: primeraSesionPendiente?.titulo || formData.tituloSesion,
             areaId: formData.areaId,
             gradoId: formData.gradoId,
             unidad: formData.unidad
@@ -562,17 +743,14 @@ export default function SesionesFichasPage() {
     setLoadingRespuestaPrompt(true)
     try {
       let sesionData = null
-      if (formData.continuarUnidad && formData.sesionSeleccionada && sesionesGuardadas.length > 0) {
-        const sesionIndex = parseInt(formData.sesionSeleccionada, 10)
-        const sesion = sesionesGuardadas[sesionIndex]
-        if (sesion) {
-          sesionData = {
-            numeroSesion: (sesionIndex + 1).toString(),
-            titulo: sesion.titulo || '',
-            competenciasSeleccionadas: sesion.competenciasSeleccionadas || [],
-            capacidadesSeleccionadas: sesion.capacidadesSeleccionadas || [],
-            desempeniosSeleccionados: sesion.desempeniosSeleccionados || []
-          }
+      if (modoSecuenciaUnidad && primeraSesionPendiente) {
+        const sesion = primeraSesionPendiente
+        sesionData = {
+          numeroSesion: String(sesion.numeroSesion),
+          titulo: sesion.titulo || '',
+          competenciasSeleccionadas: sesion.competenciasSeleccionadas || [],
+          capacidadesSeleccionadas: sesion.capacidadesSeleccionadas || [],
+          desempeniosSeleccionados: sesion.desempeniosSeleccionados || []
         }
       } else {
         sesionData = { numeroSesion: '1', titulo: formData.tituloSesion || '', competenciasSeleccionadas: [], capacidadesSeleccionadas: [], desempeniosSeleccionados: [] }
@@ -585,8 +763,8 @@ export default function SesionesFichasPage() {
             area: formData.area,
             grado: formData.grado,
             ciclo: formData.ciclo,
-            duracion: formData.duracion,
-            tituloSesion: formData.tituloSesion,
+            duracion: primeraSesionPendiente?.duracion || formData.duracion,
+            tituloSesion: primeraSesionPendiente?.titulo || formData.tituloSesion,
             areaId: formData.areaId,
             gradoId: formData.gradoId,
             unidad: formData.unidad
@@ -654,22 +832,11 @@ export default function SesionesFichasPage() {
         <div className={styles.container}>
           <h1 className={styles.title}>CREAR SESIONES</h1>
           <p className={styles.subtitle}>
-            Genera sesiones completas con fichas y rúbricas en 3 fases
+            Genera la sesión de aprendizaje de una unidad ya creada
           </p>
 
-          {/* Progress Bar */}
-          <div className={styles.progressBar}>
-            <div className={`${styles.progressSegment} ${fase >= 1 ? styles.completed : ''}`}>
-              Fase 1
-            </div>
-            <div className={`${styles.progressSegment} ${fase >= 2 ? styles.active : ''}`}>
-              Fase 2
-            </div>
-          </div>
-
-          {fase === 1 && (
-            <form onSubmit={handleFase1Submit} className={styles.form}>
-              <h2 className={styles.phaseTitle}>FASE 1: Selección Personalizada</h2>
+          <form onSubmit={handleFase1Submit} className={styles.form}>
+              <h2 className={styles.phaseTitle}>Datos de la sesión</h2>
               <p className={styles.phaseDescription}>
                 Define el contexto básico para que la IA genere materiales alineados a tu realidad.
               </p>
@@ -688,9 +855,9 @@ export default function SesionesFichasPage() {
                         areaId: e.target.value 
                       })
                     }}
-                    className={styles.select}
+                    className={`${styles.select} ${bloqueado ? styles.fieldReadonly : ''}`}
                     required
-                    disabled={loadingData}
+                    disabled={loadingData || bloqueado}
                   >
                     <option value="">Selecciona un área</option>
                     {areas.map(area => (
@@ -714,9 +881,9 @@ export default function SesionesFichasPage() {
                         cicloId: selectedGrado?.ciclo?.id.toString() || ''
                       })
                     }}
-                    className={styles.select}
+                    className={`${styles.select} ${bloqueado ? styles.fieldReadonly : ''}`}
                     required
-                    disabled={loadingData}
+                    disabled={loadingData || bloqueado}
                   >
                     <option value="">Selecciona un grado</option>
                     {grados.map(grado => (
@@ -752,8 +919,10 @@ export default function SesionesFichasPage() {
                     type="text"
                     value={formData.institucion}
                     onChange={(e) => setFormData({ ...formData, institucion: e.target.value })}
-                    className={styles.input}
+                    className={`${styles.input} ${bloqueado ? styles.fieldReadonly : ''}`}
                     placeholder="Nombre de tu I.E."
+                    disabled={bloqueado}
+                    readOnly={bloqueado}
                   />
                 </div>
 
@@ -764,8 +933,10 @@ export default function SesionesFichasPage() {
                     type="text"
                     value={formData.director}
                     onChange={(e) => setFormData({ ...formData, director: e.target.value })}
-                    className={styles.input}
+                    className={`${styles.input} ${bloqueado ? styles.fieldReadonly : ''}`}
                     placeholder="Nombre del director"
+                    disabled={bloqueado}
+                    readOnly={bloqueado}
                   />
                 </div>
 
@@ -776,36 +947,48 @@ export default function SesionesFichasPage() {
                     type="text"
                     value={formData.docente}
                     onChange={(e) => setFormData({ ...formData, docente: e.target.value })}
-                    className={styles.input}
+                    className={`${styles.input} ${bloqueado ? styles.fieldReadonly : ''}`}
                     placeholder="Tu nombre"
+                    disabled={bloqueado}
+                    readOnly={bloqueado}
                   />
                 </div>
 
-                <div className={styles.formGroup}>
-                  <label htmlFor="duracion">Duración (Opcional)</label>
-                  <select
-                    id="duracion"
-                    value={formData.duracion}
-                    onChange={(e) => setFormData({ ...formData, duracion: e.target.value })}
-                    className={styles.select}
-                  >
-                    <option value="">Selecciona la duración</option>
-                    <option value="45">45 minutos</option>
-                    <option value="90">90 minutos</option>
-                    <option value="135">135 minutos</option>
-                  </select>
-                </div>
+                {!modoSecuenciaUnidad && (
+                  <>
+                    <div className={styles.formGroup}>
+                      <label htmlFor="duracion">
+                        Duración <span className={styles.required}>*</span>
+                      </label>
+                      <select
+                        id="duracion"
+                        value={formData.duracion}
+                        onChange={(e) => setFormData({ ...formData, duracion: e.target.value })}
+                        className={styles.select}
+                        required
+                      >
+                        <option value="">Selecciona la duración</option>
+                        <option value="45">45 minutos</option>
+                        <option value="90">90 minutos</option>
+                        <option value="135">135 minutos</option>
+                      </select>
+                    </div>
 
-                <div className={styles.formGroup}>
-                  <label htmlFor="fecha">Fecha (Opcional)</label>
-                  <input
-                    id="fecha"
-                    type="date"
-                    value={formData.fecha}
-                    onChange={(e) => setFormData({ ...formData, fecha: e.target.value })}
-                    className={styles.input}
-                  />
-                </div>
+                    <div className={styles.formGroup}>
+                      <label htmlFor="fecha">
+                        Fecha <span className={styles.required}>*</span>
+                      </label>
+                      <input
+                        id="fecha"
+                        type="date"
+                        value={formData.fecha}
+                        onChange={(e) => setFormData({ ...formData, fecha: e.target.value })}
+                        className={styles.input}
+                        required
+                      />
+                    </div>
+                  </>
+                )}
 
                 <div className={styles.formGroup}>
                   <label htmlFor="unidad">Unidad (Opcional)</label>
@@ -814,397 +997,283 @@ export default function SesionesFichasPage() {
                     type="text"
                     value={formData.unidad}
                     onChange={(e) => setFormData({ ...formData, unidad: e.target.value })}
-                    className={styles.input}
+                    className={`${styles.input} ${bloqueado ? styles.fieldReadonly : ''}`}
                     placeholder="Número de unidad (ej: 1, 2, 3...)"
+                    disabled={bloqueado}
+                    readOnly={bloqueado}
                   />
-                  <p className={styles.helpText}>Necesario si deseas continuar con una unidad ya generada</p>
-                </div>
-              </div>
-
-              <button type="submit" className={styles.button}>Continuar a Fase 2</button>
-            </form>
-          )}
-
-          {fase === 2 && (
-            <form onSubmit={handleFase2Submit} className={styles.form}>
-              <h2 className={styles.phaseTitle}>FASE 2: Personaliza tu sesión</h2>
-              <p className={styles.phaseDescription}>
-                Decide si deseas crear tu sesión desde cero o continuar con la secuencia de una unidad ya generada.
-              </p>
-
-              <div className={styles.formGroup}>
-                <label>
-                  <input
-                    type="checkbox"
-                    checked={formData.continuarUnidad}
-                    onChange={(e) => {
-                      setFormData({ 
-                        ...formData, 
-                        continuarUnidad: e.target.checked,
-                        sesionSeleccionada: e.target.checked ? formData.sesionSeleccionada : ''
-                      })
-                    }}
-                    className={styles.checkbox}
-                  />
-                  Continuar con secuencia de una unidad ya generada
-                </label>
-              </div>
-
-              {formData.continuarUnidad && (
-                <div className={styles.formGroup}>
-                  <label htmlFor="sesionSeleccionada">Seleccionar Sesión <span className={styles.required}>*</span></label>
                   <p className={styles.helpText}>
-                    {loadingSesiones 
-                      ? 'Cargando sesiones guardadas...'
-                      : sesionesGuardadas.length === 0
-                      ? formData.areaId && formData.gradoId && formData.unidad
-                        ? 'No se encontraron sesiones guardadas para esta unidad. Asegúrate de haber generado la unidad de aprendizaje primero.'
-                        : 'Selecciona área, grado y unidad en la Fase 1 para cargar las sesiones guardadas.'
-                      : `Se encontraron ${sesionesGuardadas.length} sesión(es) guardada(s).`}
+                    {bloqueado
+                      ? 'Unidad vinculada a la que acabas de generar'
+                      : 'Necesario si deseas continuar con una unidad ya generada'}
                   </p>
-                  <select
-                    id="sesionSeleccionada"
-                    value={formData.sesionSeleccionada}
-                    onChange={(e) => setFormData({ ...formData, sesionSeleccionada: e.target.value })}
-                    className={styles.select}
-                    required={formData.continuarUnidad}
-                    disabled={loadingSesiones || sesionesGuardadas.length === 0 || !formData.areaId || !formData.gradoId || !formData.unidad}
-                    style={{ 
-                      display: 'block',
-                      width: '100%',
-                      padding: '8px',
-                      fontSize: '16px',
-                      border: '1px solid #ccc',
-                      borderRadius: '4px'
-                    }}
-                  >
-                    <option value="">Selecciona una sesión</option>
-                    {sesionesGuardadas.length > 0 ? (
-                      sesionesGuardadas.map((sesion, index) => (
-                        <option key={index} value={index.toString()}>
-                          Sesión {index + 1}: {sesion.titulo || 'Sin título'}
-                        </option>
-                      ))
-                    ) : (
-                      <option value="" disabled>No hay sesiones disponibles</option>
-                    )}
-                  </select>
-                  {formData.sesionSeleccionada && sesionesGuardadas[parseInt(formData.sesionSeleccionada, 10)] && (
-                    <div style={{ marginTop: '10px', padding: '10px', backgroundColor: '#f0f9ff', borderRadius: '6px', border: '1px solid #bfdbfe' }}>
-                      <strong style={{ color: '#1e40af' }}>Datos de la sesión seleccionada:</strong>
-                      <ul style={{ marginTop: '8px', paddingLeft: '20px', listStyle: 'disc' }}>
-                        <li style={{ marginBottom: '4px' }}>
-                          <strong>Título:</strong> {sesionesGuardadas[parseInt(formData.sesionSeleccionada, 10)].titulo || 'Sin título'}
-                        </li>
-                        {sesionesGuardadas[parseInt(formData.sesionSeleccionada, 10)].competenciasSeleccionadas && 
-                         sesionesGuardadas[parseInt(formData.sesionSeleccionada, 10)].competenciasSeleccionadas.length > 0 && (
-                          <li style={{ marginBottom: '4px' }}>
-                            <strong>Competencias:</strong> {sesionesGuardadas[parseInt(formData.sesionSeleccionada, 10)].competenciasSeleccionadas.length} seleccionada(s)
-                          </li>
-                        )}
-                        {sesionesGuardadas[parseInt(formData.sesionSeleccionada, 10)].capacidadesSeleccionadas && 
-                         sesionesGuardadas[parseInt(formData.sesionSeleccionada, 10)].capacidadesSeleccionadas.length > 0 && (
-                          <li style={{ marginBottom: '4px' }}>
-                            <strong>Capacidades:</strong> {sesionesGuardadas[parseInt(formData.sesionSeleccionada, 10)].capacidadesSeleccionadas.length} seleccionada(s)
-                          </li>
-                        )}
-                        {sesionesGuardadas[parseInt(formData.sesionSeleccionada, 10)].desempeniosSeleccionados && 
-                         sesionesGuardadas[parseInt(formData.sesionSeleccionada, 10)].desempeniosSeleccionados.length > 0 && (
-                          <li style={{ marginBottom: '4px' }}>
-                            <strong>Desempeños:</strong> {sesionesGuardadas[parseInt(formData.sesionSeleccionada, 10)].desempeniosSeleccionados.length} seleccionado(s)
-                          </li>
-                        )}
-                      </ul>
-                    </div>
-                  )}
                 </div>
-              )}
+              </div>
 
-              {!formData.continuarUnidad && (
-                <>
-                  {/* Paso 1: Seleccionar Competencia */}
+              <div className={styles.sesionSection}>
+                {!bloqueado && (
                   <div className={styles.formGroup}>
-                    <label htmlFor="competencia">Seleccionar Competencia <span className={styles.required}>*</span></label>
-                    <p className={styles.helpText}>Selecciona una competencia para comenzar.</p>
-                    {competencias.length === 0 && formData.areaId && formData.gradoId ? (
-                      <p className={styles.helpText} style={{ color: '#666', fontStyle: 'italic' }}>
-                        Cargando competencias...
-                      </p>
-                    ) : competencias.length === 0 ? (
-                      <p className={styles.helpText} style={{ color: '#f59e0b' }}>
-                        Por favor selecciona un área y grado en la Fase 1 primero
-                      </p>
-                    ) : null}
-                    <select
-                      id="competencia"
-                      className={styles.select}
-                      value={formData.competenciaSeleccionada}
-                      onChange={(e) => {
-                        setFormData({ 
-                          ...formData, 
-                          competenciaSeleccionada: e.target.value,
-                          capacidadSeleccionada: '',
-                          desempeniosSeleccionados: []
-                        })
-                      }}
-                      required
-                      disabled={competencias.length === 0}
-                    >
-                      <option value="">Selecciona una competencia</option>
-                      {competencias.map(competencia => (
-                        <option key={competencia.id} value={competencia.id.toString()}>
-                          {competencia.descripcion}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  {/* Paso 2: Seleccionar Capacidad */}
-                  {formData.competenciaSeleccionada && (
-                    <div className={styles.formGroup}>
-                      <label htmlFor="capacidad">Seleccionar Capacidad <span className={styles.required}>*</span></label>
-                      <p className={styles.helpText}>
-                        {loadingCapacidades 
-                          ? 'Cargando capacidades...'
-                          : capacidades.length > 0
-                          ? `Se encontraron ${capacidades.length} capacidades para esta competencia.`
-                          : 'No se encontraron capacidades para esta competencia.'}
-                      </p>
-                      <select
-                        id="capacidad"
-                        className={styles.select}
-                        value={formData.capacidadSeleccionada}
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={formData.continuarUnidad}
                         onChange={(e) => {
-                          setFormData({ 
-                            ...formData, 
-                            capacidadSeleccionada: e.target.value,
-                            desempeniosSeleccionados: []
+                          setFormData({
+                            ...formData,
+                            continuarUnidad: e.target.checked
                           })
                         }}
-                        required
-                        disabled={loadingCapacidades || capacidades.length === 0}
-                      >
-                        <option value="">Selecciona una capacidad</option>
-                        {capacidades.map(capacidad => (
-                          <option key={capacidad.id} value={capacidad.id.toString()}>
-                            {capacidad.descripcion}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  )}
-
-                  {/* Paso 3: Seleccionar Desempeños (hasta 3) */}
-                  {formData.competenciaSeleccionada && (
-                    <div className={styles.formGroup}>
-                      <label htmlFor="desempenios">Seleccionar Desempeños <span className={styles.required}>*</span></label>
-                      <p className={styles.helpText}>
-                        {formData.capacidadSeleccionada && loadingDesempenios 
-                          ? 'Cargando desempeños...'
-                          : todosLosDesempenios.length > 0
-                          ? `Hay ${todosLosDesempenios.length} desempeños disponibles. Puedes seleccionar hasta 3 desempeños de diferentes capacidades.`
-                          : formData.capacidadSeleccionada
-                          ? 'No se encontraron desempeños para esta capacidad.'
-                          : 'Selecciona una capacidad para ver los desempeños disponibles.'}
-                        {formData.desempeniosSeleccionados.length > 0 && (
-                          <span style={{ display: 'block', marginTop: '5px', color: formData.desempeniosSeleccionados.length >= 3 ? '#22c55e' : '#3b82f6', fontWeight: 600 }}>
-                            {formData.desempeniosSeleccionados.length} de 3 desempeños seleccionados
-                          </span>
-                        )}
-                      </p>
-                      {todosLosDesempenios.length > 0 ? (
-                        <>
-                          <select
-                            id="desempenios"
-                            className={styles.select}
-                            multiple
-                            size={6}
-                            value={formData.desempeniosSeleccionados}
-                            onChange={(e) => {
-                              const selected = Array.from(e.target.selectedOptions, option => option.value)
-                              // Limitar a 3 desempeños
-                              if (selected.length <= 3) {
-                                setFormData({ ...formData, desempeniosSeleccionados: selected })
-                              } else {
-                                alert('Solo puedes seleccionar hasta 3 desempeños')
-                                // Mantener solo los primeros 3
-                                setFormData({ ...formData, desempeniosSeleccionados: selected.slice(0, 3) })
-                              }
-                            }}
-                            required
-                            disabled={todosLosDesempenios.length === 0}
-                          >
-                            {todosLosDesempenios.map(desempenio => {
-                              const capacidad = capacidades.find(c => c.id === desempenio.idcapacidad)
-                              const isSelected = formData.desempeniosSeleccionados.includes(desempenio.id.toString())
-                              return (
-                                <option 
-                                  key={desempenio.id} 
-                                  value={desempenio.id.toString()}
-                                  style={{ 
-                                    backgroundColor: isSelected ? '#dbeafe' : 'transparent',
-                                    fontWeight: isSelected ? 600 : 'normal'
-                                  }}
-                                >
-                                  {capacidad ? `[${capacidad.descripcion.substring(0, 30)}...] ` : ''}
-                                  {desempenio.descripcion}
-                                </option>
-                              )
-                            })}
-                          </select>
-                          <p className={styles.helpText}>
-                            Mantén presionado Ctrl/Cmd para seleccionar múltiples. Máximo 3 desempeños. Puedes cambiar de capacidad para ver más opciones.
-                          </p>
-                        </>
-                      ) : formData.capacidadSeleccionada ? (
-                        <p className={styles.helpText} style={{ color: '#f59e0b' }}>
-                          No hay desempeños disponibles para esta capacidad. Intenta seleccionar otra capacidad.
-                        </p>
-                      ) : null}
-                      {formData.desempeniosSeleccionados.length > 0 && (
-                        <div style={{ marginTop: '10px', padding: '10px', backgroundColor: '#f0f9ff', borderRadius: '6px', border: '1px solid #bfdbfe' }}>
-                          <strong style={{ color: '#1e40af' }}>Desempeños seleccionados ({formData.desempeniosSeleccionados.length}/3):</strong>
-                          <ul style={{ marginTop: '8px', paddingLeft: '20px', listStyle: 'disc' }}>
-                            {formData.desempeniosSeleccionados.map(id => {
-                              const desempenio = todosLosDesempenios.find(d => d.id.toString() === id)
-                              const capacidad = desempenio ? capacidades.find(c => c.id === desempenio.idcapacidad) : null
-                              return desempenio ? (
-                                <li key={id} style={{ marginBottom: '8px', fontSize: '14px', lineHeight: '1.5' }}>
-                                  <strong style={{ color: '#3b82f6' }}>
-                                    {capacidad ? `[${capacidad.descripcion}] ` : ''}
-                                  </strong>
-                                  {desempenio.descripcion}
-                                </li>
-                              ) : null
-                            })}
-                          </ul>
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Opción para cambiar de capacidad y seleccionar más desempeños */}
-                  {formData.desempeniosSeleccionados.length > 0 && formData.desempeniosSeleccionados.length < 3 && (
-                    <div className={styles.formGroup}>
-                      <p className={styles.helpText} style={{ color: '#3b82f6', fontStyle: 'italic', padding: '10px', backgroundColor: '#eff6ff', borderRadius: '6px' }}>
-                        💡 Puedes cambiar de capacidad arriba para seleccionar desempeños adicionales hasta completar 3. Los desempeños ya seleccionados se mantendrán.
-                      </p>
-                    </div>
-                  )}
-
-                  <div className={styles.formGroup}>
-                    <label htmlFor="tituloSesion">Título de la Sesión</label>
-                    <input
-                      id="tituloSesion"
-                      type="text"
-                      value={formData.tituloSesion}
-                      onChange={(e) => setFormData({ ...formData, tituloSesion: e.target.value })}
-                      className={styles.input}
-                      placeholder="¿Deseas que la IA proponga el título de tu sesión? (Opcional)"
-                    />
+                        className={styles.checkbox}
+                      />
+                      Continuar con secuencia de una unidad ya generada
+                    </label>
                   </div>
-                </>
-              )}
+                )}
 
-              <div className={styles.buttonGroup}>
-                <button
-                  type="button"
-                  onClick={() => setFase(1)}
-                  className={styles.buttonSecondary}
-                >
-                  Volver a Fase 1
-                </button>
-                <button
-                  type="button"
-                  onClick={handlePromptDinamico}
-                  className={styles.buttonSecondary}
-                  disabled={loadingPrompt || !formData.duracion}
-                  title={!formData.duracion ? 'Selecciona duración en Fase 1' : ''}
-                >
-                  {loadingPrompt ? 'Descargando...' : 'Prompt dinámico'}
-                </button>
-                <button
-                  type="button"
-                  onClick={handleRespuestaPrompt}
-                  className={styles.buttonSecondary}
-                  disabled={loadingRespuestaPrompt || !formData.duracion}
-                  title={!formData.duracion ? 'Selecciona duración en Fase 1' : ''}
-                >
-                  {loadingRespuestaPrompt ? 'Generando...' : 'Respuesta prompt'}
-                </button>
-                <button type="submit" className={styles.button} disabled={loading}>
-                  {loading ? 'Generando...' : 'Generar documento'}
-                </button>
+                {modoSecuenciaUnidad && (
+                  <div className={styles.formGroup}>
+                    <label>
+                      Sesiones pendientes <span className={styles.required}>*</span>
+                    </label>
+                    <p className={styles.helpText}>
+                      {loadingSesiones
+                        ? 'Cargando sesiones guardadas...'
+                        : sesionesGuardadas.length === 0
+                          ? formData.areaId && formData.gradoId && formData.unidad
+                            ? sesionesYaGeneradasCount > 0
+                              ? 'Todas las sesiones de esta unidad ya fueron generadas.'
+                              : 'No se encontraron sesiones en la unidad. Genera la unidad de aprendizaje primero.'
+                            : 'Indica área, grado y unidad para cargar las sesiones.'
+                          : `Configura duración y fecha de cada sesión. Pendientes: ${sesionesGuardadas.length}.${
+                              sesionesYaGeneradasCount > 0
+                                ? ` Ya generadas: ${sesionesYaGeneradasCount}.`
+                                : ''
+                            } Al generar, se procesarán una tras otra.`}
+                    </p>
+                    {sesionesGuardadas.length > 0 && (
+                      <ul className={styles.sesionesPendientesLista}>
+                        {sesionesGuardadas.map((sesion) => (
+                          <li
+                            key={sesion.numeroSesion}
+                            className={styles.sesionPendienteCard}
+                          >
+                            <div className={styles.sesionPendienteTitulo}>
+                              <strong>Sesión {sesion.numeroSesion}</strong>
+                              <span>{sesion.titulo || 'Sin título'}</span>
+                            </div>
+                            <div className={styles.sesionPendienteCampos}>
+                              <div className={styles.formGroup}>
+                                <label htmlFor={`duracion-${sesion.numeroSesion}`}>
+                                  Duración <span className={styles.required}>*</span>
+                                </label>
+                                <select
+                                  id={`duracion-${sesion.numeroSesion}`}
+                                  value={sesion.duracion}
+                                  onChange={(e) =>
+                                    actualizarSesionPendiente(
+                                      sesion.numeroSesion,
+                                      'duracion',
+                                      e.target.value
+                                    )
+                                  }
+                                  className={styles.select}
+                                  disabled={generandoSesion}
+                                >
+                                  <option value="">Selecciona la duración</option>
+                                  <option value="45">45 minutos</option>
+                                  <option value="90">90 minutos</option>
+                                  <option value="135">135 minutos</option>
+                                </select>
+                              </div>
+                              <div className={styles.formGroup}>
+                                <label htmlFor={`fecha-${sesion.numeroSesion}`}>
+                                  Fecha <span className={styles.required}>*</span>
+                                </label>
+                                <input
+                                  id={`fecha-${sesion.numeroSesion}`}
+                                  type="date"
+                                  value={sesion.fecha}
+                                  onChange={(e) =>
+                                    actualizarSesionPendiente(
+                                      sesion.numeroSesion,
+                                      'fecha',
+                                      e.target.value
+                                    )
+                                  }
+                                  className={styles.input}
+                                  disabled={generandoSesion}
+                                />
+                              </div>
+                            </div>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                )}
               </div>
+
+              <button
+                type="submit"
+                className={styles.button}
+                disabled={
+                  generandoSesion ||
+                  !puedeGenerarLote ||
+                  loadingSesiones
+                }
+              >
+                {generandoSesion
+                  ? 'Generando sesiones...'
+                  : sesionesGuardadas.length > 1
+                    ? `Generar ${sesionesGuardadas.length} sesiones`
+                    : 'Generar documento'}
+              </button>
             </form>
-          )}
         </div>
 
-        {/* Modal: actualizar o traer de la BD (igual que unidad aprendizaje) */}
-        {showModalGeneracion && (
+        {overlayGeneracion && (
           <div
-            style={{
-              position: 'fixed',
-              top: 0,
-              left: 0,
-              right: 0,
-              bottom: 0,
-              backgroundColor: 'rgba(0, 0, 0, 0.5)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              zIndex: 1000
-            }}
-            onClick={() => setShowModalGeneracion(false)}
+            className={styles.generatingOverlay}
+            role="dialog"
+            aria-modal="true"
+            aria-busy={generandoSesion}
           >
             <div
-              style={{
-                backgroundColor: 'white',
-                padding: '30px',
-                borderRadius: '12px',
-                maxWidth: '500px',
-                width: '90%',
-                boxShadow: '0 4px 20px rgba(0, 0, 0, 0.3)'
-              }}
-              onClick={(e) => e.stopPropagation()}
+              className={`${styles.generatingOverlayCard} ${
+                progresoLote.length > 0 ? styles.generatingOverlayCardWide : ''
+              }`}
             >
-              <h3 style={{ marginTop: 0, marginBottom: '15px', color: '#0066cc', fontSize: '24px' }}>
-                Opciones de generación
-              </h3>
-              <p style={{ marginBottom: '25px', color: '#666', lineHeight: '1.6' }}>
-                Hay datos guardados para esta sesión. ¿Qué deseas hacer?
-              </p>
-              <div style={{ display: 'flex', gap: '10px', marginBottom: '15px', flexDirection: 'column' }}>
-                <button
-                  type="button"
-                  className={styles.button}
-                  onClick={() => generarDocumento(true)}
-                  style={{ width: '100%', padding: '12px 20px', fontSize: '16px', fontWeight: 600 }}
-                >
-                  📦 Generar lo guardado
-                </button>
-                <button
-                  type="button"
-                  className={styles.buttonSecondary}
-                  onClick={() => generarDocumento(false)}
-                  style={{ width: '100%', padding: '12px 20px', fontSize: '16px', fontWeight: 600 }}
-                >
-                  🔄 Generar nuevamente
-                </button>
-              </div>
-              <button
-                type="button"
-                className={styles.buttonSecondary}
-                onClick={() => setShowModalGeneracion(false)}
-                style={{ width: '100%', padding: '10px 20px', fontSize: '14px' }}
-              >
-                Cancelar
-              </button>
+              {generacionCompletada ? (
+                <>
+                  <div className={styles.generatingSuccessIcon} aria-hidden>
+                    ✓
+                  </div>
+                  <h3 className={styles.generatingTitle}>
+                    {resumenLote.fallidas === 0
+                      ? progresoLote.length > 1
+                        ? '¡Sesiones generadas!'
+                        : '¡Sesión generada!'
+                      : 'Proceso finalizado'}
+                  </h3>
+                  <p className={styles.generatingText}>
+                    {resumenLote.exitosas > 0
+                      ? `${resumenLote.exitosas} sesión(es) guardada(s) y descargada(s) en tu equipo. Revisa la carpeta de descargas.`
+                      : 'No se pudo generar ninguna sesión.'}
+                    {resumenLote.fallidas > 0
+                      ? ` ${resumenLote.fallidas} con error (puedes corregir y volver a intentar).`
+                      : ''}
+                  </p>
+                  {progresoLote.length > 0 && (
+                    <ul className={styles.progresoChecklist}>
+                      {progresoLote.map((item) => (
+                        <li
+                          key={item.numeroSesion}
+                          className={`${styles.progresoChecklistItem} ${claseEstadoProgreso(item.estado)}`}
+                        >
+                          <span className={styles.progresoChecklistIcon}>
+                            {iconoEstadoProgreso(item.estado)}
+                          </span>
+                          <span className={styles.progresoChecklistTexto}>
+                            Sesión {item.numeroSesion}: {item.titulo}
+                            {item.mensaje ? ` — ${item.mensaje}` : ''}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  <div className={styles.generatingActions}>
+                    <button
+                      type="button"
+                      className={styles.generatingBtnPrimary}
+                      onClick={() => {
+                        cerrarOverlayGeneracion()
+                        irAlModalOrigen()
+                      }}
+                    >
+                      Cerrar
+                    </button>
+                  </div>
+                </>
+              ) : progresoLote.length > 0 ? (
+                <>
+                  <div className={styles.progresoSpinnerHeader}>
+                    <div className={styles.progresoSpinnerGrande} aria-hidden />
+                  </div>
+                  <h3 className={styles.generatingTitle}>Generando sesiones…</h3>
+                  <p className={styles.generatingText}>
+                    {sesionEnCurso
+                      ? `Sesión ${sesionEnCurso.numeroSesion} en curso (${sesionesCompletadas} de ${progresoLote.length} lista(s)).`
+                      : 'La IA está creando cada documento en secuencia.'}{' '}
+                    No cierres esta página.
+                  </p>
+                  <ul className={styles.progresoChecklist}>
+                    {progresoLote.map((item) => (
+                      <li
+                        key={item.numeroSesion}
+                        className={`${styles.progresoChecklistItem} ${claseEstadoProgreso(item.estado)}`}
+                      >
+                        <span className={styles.progresoChecklistIcon}>
+                          {iconoEstadoProgreso(item.estado)}
+                        </span>
+                        <span className={styles.progresoChecklistTexto}>
+                          Sesión {item.numeroSesion}: {item.titulo}
+                          {item.estado === 'generando' ? ' — generando…' : ''}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              ) : (
+                <>
+                  <div className={styles.generatingSpinner} aria-hidden>
+                    <svg width="52" height="52" viewBox="0 0 50 50">
+                      <circle cx="25" cy="25" r="20" fill="none" stroke="#cbd5e1" strokeWidth="6" />
+                      <path
+                        d="M25 5a20 20 0 0 1 20 20"
+                        fill="none"
+                        stroke="#2563eb"
+                        strokeWidth="6"
+                        strokeLinecap="round"
+                      >
+                        <animateTransform
+                          attributeName="transform"
+                          type="rotate"
+                          from="0 25 25"
+                          to="360 25 25"
+                          dur="0.9s"
+                          repeatCount="indefinite"
+                        />
+                      </path>
+                    </svg>
+                  </div>
+                  <h3 className={styles.generatingTitle}>Preparando generación…</h3>
+                </>
+              )}
             </div>
           </div>
         )}
+
       </main>
     </>
+  )
+}
+
+export default function SesionesFichasPage() {
+  return (
+    <Suspense
+      fallback={
+        <>
+          <Header />
+          <main className={styles.main}>
+            <div className={styles.container}>
+              <p className={styles.subtitle}>Cargando…</p>
+            </div>
+          </main>
+        </>
+      }
+    >
+      <SesionesFichasContent />
+    </Suspense>
   )
 }
 
