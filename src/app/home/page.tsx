@@ -22,6 +22,11 @@ import {
   type DocumentosPlanResponse
 } from './StepModalDocumentos'
 
+type UnidadPlanConfig = {
+  problemaPotencialidad?: string
+  producto?: string
+}
+
 type PlanAnual = {
   id: number
   anio: number
@@ -38,7 +43,7 @@ type PlanAnual = {
   departamento?: string | null
   provincia?: string | null
   distrito?: string | null
-  unidades?: unknown
+  unidades?: UnidadPlanConfig[]
   estadoDocumentos?: EstadoDocumentosPlan
 }
 
@@ -444,11 +449,10 @@ function HomeContent() {
                               <span className={styles.metaItem}>👤 {plan.docente}</span>
                             )}
                           </div>
-                          {plan.unidades && Array.isArray(plan.unidades) && (
+                          {Array.isArray(plan.unidades) && (
                             <div className={styles.unidadesCount}>
                               {plan.unidades.filter(
-                                (u: { problemaPotencialidad?: string; producto?: string }) =>
-                                  u.problemaPotencialidad || u.producto
+                                (u) => u.problemaPotencialidad || u.producto
                               ).length}{' '}
                               unidad(es) configurada(s)
                             </div>

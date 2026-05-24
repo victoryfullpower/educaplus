@@ -145,8 +145,9 @@ export async function leerSelloPdf(buffer: Buffer): Promise<LecturaSello> {
     let metadatos = parsePdfSubject(pdfDoc.getSubject())
 
     if (!metadatos.codigoeducaplus) {
-      const keywords = pdfDoc.getKeywords() ?? []
-      const kw = keywords.find((k) => k.startsWith('codigoeducaplus:'))
+      const raw = pdfDoc.getKeywords()
+      const keywords = Array.isArray(raw) ? raw : raw ? [raw] : []
+      const kw = keywords.find((k: string) => k.startsWith('codigoeducaplus:'))
       if (kw) {
         metadatos = { codigoeducaplus: kw.slice('codigoeducaplus:'.length) }
       }

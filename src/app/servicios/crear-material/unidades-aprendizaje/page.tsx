@@ -1294,7 +1294,7 @@ function UnidadesAprendizajeContent() {
                       required
                       disabled={
                         (!planIdParam && bloqueadoPlan) ||
-                        (planIdParam && unidadesCombo.length === 0)
+                        (!!planIdParam && unidadesCombo.length === 0)
                       }
                     >
                       <option value="">Selecciona una unidad</option>
