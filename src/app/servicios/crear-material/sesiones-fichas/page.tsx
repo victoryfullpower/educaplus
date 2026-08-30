@@ -1,10 +1,22 @@
 'use client'
 
-import { Suspense, useState, useEffect, useRef } from 'react'
+import { Suspense, useState, useEffect, useRef, useMemo } from 'react'
+import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
 import Header from '@/components/Header'
 import styles from './sesiones-fichas.module.css'
-import { descargarBlobDesdeResponse } from '@/lib/home-descarga-documento'
+import { descargarSesionDesdeRespuestaJson } from '@/lib/home-descarga-documento'
+import {
+  esErrorTrialAgotado,
+  esErrorTrialUnaSesion,
+  RUTA_PLANES_PAGO
+} from '@/lib/error-generacion-documento'
+import {
+  MAX_SESION_NUMERO_TRIAL,
+  tieneSuscripcionActivaParaGrado,
+  type SuscripcionActivaCliente
+} from '@/lib/acceso-cliente'
+import { useAvisoModal } from '@/hooks/useAvisoModal'
 import {
   guardarRetornoModal,
   leerRetornoModal,
@@ -88,8 +100,26 @@ type ProgresoSesionItem = {
   mensaje?: string
 }
 
+type CuotaSesionCliente = {
+  limite: number | null
+  usados: number
+  restantes: number | null
+  periodo: 'mensual' | 'anual' | 'trial' | 'sin_limite'
+  puedeCrear: boolean
+  mensaje: string | null
+}
+
+function etiquetaPeriodoCuota(periodo?: string): string {
+  if (periodo === 'mensual') return 'este mes'
+  if (periodo === 'anual') return 'en tu vigencia anual'
+  return 'en tu plan'
+}
+
 function SesionesFichasContent() {
   const router = useRouter()
+  const { manejarErrorGeneracion, AvisoModalEl } = useAvisoModal(
+    'EducaPlus · Sesiones de aprendizaje'
+  )
   const searchParams = useSearchParams()
   const areaIdParam = searchParams.get('areaId')
   const gradoIdParam = searchParams.get('gradoId')
@@ -100,6 +130,13 @@ function SesionesFichasContent() {
   const precargadoUnidadRef = useRef(false)
   const unidadAprendizajeIdRef = useRef<number | null>(null)
 
+  const [suscripcionActiva, setSuscripcionActiva] = useState<SuscripcionActivaCliente>(null)
+  const [cuotaSesion, setCuotaSesion] = useState<CuotaSesionCliente | null>(null)
+  const [trialSesion, setTrialSesion] = useState<{
+    usado: boolean
+    total: number
+    restante: number
+  } | null>(null)
   const [bloqueadoDesdeUnidad, setBloqueadoDesdeUnidad] = useState(false)
   const [sesionesYaGeneradasCount, setSesionesYaGeneradasCount] = useState(0)
   const [overlayGeneracion, setOverlayGeneracion] = useState(false)
@@ -164,6 +201,28 @@ function SesionesFichasContent() {
     }
 
     loadInitialData()
+  }, [])
+
+  useEffect(() => {
+    const cargarAcceso = async () => {
+      try {
+        const res = await fetch('/api/usuario/acceso')
+        if (!res.ok) return
+        const data = await res.json()
+        if (data.suscripcionActiva) {
+          setSuscripcionActiva(data.suscripcionActiva)
+        }
+        if (data.cuotaSesion) {
+          setCuotaSesion(data.cuotaSesion)
+        }
+        if (data.trial?.sesion) {
+          setTrialSesion(data.trial.sesion)
+        }
+      } catch {
+        /* sin sesión o error de red */
+      }
+    }
+    void cargarAcceso()
   }, [])
 
   // Precarga desde unidad generada (?areaId=&gradoId=&unidad=&desdeUnidad=1)
@@ -294,9 +353,62 @@ function SesionesFichasContent() {
 
   const bloqueado = bloqueadoDesdeUnidad
   const modoSecuenciaUnidad = formData.continuarUnidad || bloqueadoDesdeUnidad
+
+  const accesoTodasSesiones = useMemo(
+    () => tieneSuscripcionActivaParaGrado(suscripcionActiva, formData.areaId, formData.gradoId),
+    [suscripcionActiva, formData.areaId, formData.gradoId]
+  )
+
+  const sesionBloqueadaTrial = (numeroSesion: number) =>
+    numeroSesion > MAX_SESION_NUMERO_TRIAL && !accesoTodasSesiones
+
+  const cupoGeneracionSesiones = useMemo(() => {
+    if (!accesoTodasSesiones) {
+      const r = trialSesion?.restante ?? 1
+      return r > 0 ? r : 0
+    }
+    if (cuotaSesion?.restantes == null) return null
+    return Math.max(0, cuotaSesion.restantes)
+  }, [accesoTodasSesiones, cuotaSesion, trialSesion])
+
+  const sesionesConfiguradasEnCupo = useMemo(
+    () =>
+      sesionesGuardadas.filter(
+        (s) => s.duracion && !sesionBloqueadaTrial(s.numeroSesion)
+      ).length,
+    [sesionesGuardadas, accesoTodasSesiones, trialSesion]
+  )
+
+  const sesionesDisponiblesParaConfigurar = useMemo(() => {
+    if (cupoGeneracionSesiones == null) return null
+    return Math.max(0, cupoGeneracionSesiones - sesionesConfiguradasEnCupo)
+  }, [cupoGeneracionSesiones, sesionesConfiguradasEnCupo])
+
+  type MotivoBloqueoSesion = 'trial' | 'cuota' | null
+
+  const motivoBloqueoSesion = (sesion: SesionPendienteItem): MotivoBloqueoSesion => {
+    if (sesionBloqueadaTrial(sesion.numeroSesion)) return 'trial'
+    if (cupoGeneracionSesiones == null) return null
+    if (cupoGeneracionSesiones === 0) return 'cuota'
+    if (sesion.duracion) return null
+    if (sesionesConfiguradasEnCupo >= cupoGeneracionSesiones) return 'cuota'
+    return null
+  }
+
+  const sesionesGenerables = useMemo(() => {
+    let list = accesoTodasSesiones
+      ? sesionesGuardadas
+      : sesionesGuardadas.filter((s) => s.numeroSesion <= MAX_SESION_NUMERO_TRIAL)
+    list = list.filter((s) => s.duracion)
+    if (cupoGeneracionSesiones != null) {
+      list = list.slice(0, cupoGeneracionSesiones)
+    }
+    return list
+  }, [sesionesGuardadas, accesoTodasSesiones, cupoGeneracionSesiones])
+
   const sesionesPendientesConfiguradas =
-    sesionesGuardadas.length > 0 &&
-    sesionesGuardadas.every((s) => s.duracion && s.fecha)
+    sesionesGenerables.length > 0 &&
+    sesionesGenerables.every((s) => s.duracion)
   const puedeGenerarLote =
     modoSecuenciaUnidad &&
     Boolean(formData.areaId && formData.gradoId && formData.unidad) &&
@@ -307,6 +419,8 @@ function SesionesFichasContent() {
     campo: 'duracion' | 'fecha',
     valor: string
   ) => {
+    const sesion = sesionesGuardadas.find((s) => s.numeroSesion === numeroSesion)
+    if (!sesion || motivoBloqueoSesion(sesion)) return
     setSesionesGuardadas((prev) =>
       prev.map((s) => (s.numeroSesion === numeroSesion ? { ...s, [campo]: valor } : s))
     )
@@ -583,7 +697,8 @@ function SesionesFichasContent() {
       },
       sesionData,
       unidadData,
-      tableTextFromPrompt: tableTextFromPrompt || undefined
+      tableTextFromPrompt: tableTextFromPrompt || undefined,
+      formato: 'json'
     }
     const response = await fetch('/api/sesiones-fichas/generate-document', {
       method: 'POST',
@@ -594,11 +709,11 @@ function SesionesFichasContent() {
       .replace(/\s+/g, '_')
       .replace(/[^a-zA-Z0-9_]/g, '')
     const nombreFallback = `SESION_${areaSlug}_U${formData.unidad || '0'}_S${sesion.numeroSesion}.docx`
-    await descargarBlobDesdeResponse(response, nombreFallback)
+    await descargarSesionDesdeRespuestaJson(response, nombreFallback)
   }
 
   const generarLoteSesiones = async () => {
-    const pendientes = [...sesionesGuardadas]
+    const pendientes = [...sesionesGenerables]
     if (pendientes.length === 0) return
 
     setOverlayGeneracion(true)
@@ -643,6 +758,10 @@ function SesionesFichasContent() {
             p.numeroSesion === sesion.numeroSesion ? { ...p, estado: 'error', mensaje } : p
           )
         )
+        if (esErrorTrialAgotado(error) || esErrorTrialUnaSesion(error)) {
+          manejarErrorGeneracion(error)
+          break
+        }
       }
     }
 
@@ -651,6 +770,16 @@ function SesionesFichasContent() {
         prev.filter((s) => !numerosExitosos.includes(s.numeroSesion))
       )
       setSesionesYaGeneradasCount((c) => c + numerosExitosos.length)
+      setCuotaSesion((prev) => {
+        if (!prev || prev.restantes == null) return prev
+        const generadas = numerosExitosos.length
+        return {
+          ...prev,
+          usados: prev.usados + generadas,
+          restantes: Math.max(0, prev.restantes - generadas),
+          puedeCrear: Math.max(0, prev.restantes - generadas) > 0
+        }
+      })
     }
     setResumenLote({ exitosas, fallidas })
     setGeneracionCompletada(true)
@@ -664,14 +793,18 @@ function SesionesFichasContent() {
       )
       return
     }
-    if (sesionesGuardadas.length === 0) {
+    if (sesionesGenerables.length === 0) {
       alert('No hay sesiones pendientes para generar.')
       return
     }
-    const sinConfigurar = sesionesGuardadas.filter((s) => !s.duracion || !s.fecha)
+    const sinConfigurar = sesionesGenerables.filter((s) => !s.duracion)
     if (sinConfigurar.length > 0) {
       alert(
-        `Configura duración y fecha para todas las sesiones pendientes (${sinConfigurar.length} sin completar).`
+        accesoTodasSesiones
+          ? cupoGeneracionSesiones != null
+            ? `Configura la duración de al menos una sesión (máximo ${cupoGeneracionSesiones} según tu plan).`
+            : `Configura la duración de las sesiones que deseas generar.`
+          : `Configura la duración de la sesión 1.`
       )
       return
     }
@@ -975,16 +1108,13 @@ function SesionesFichasContent() {
                     </div>
 
                     <div className={styles.formGroup}>
-                      <label htmlFor="fecha">
-                        Fecha <span className={styles.required}>*</span>
-                      </label>
+                      <label htmlFor="fecha">Fecha (opcional)</label>
                       <input
                         id="fecha"
                         type="date"
                         value={formData.fecha}
                         onChange={(e) => setFormData({ ...formData, fecha: e.target.value })}
                         className={styles.input}
-                        required
                       />
                     </div>
                   </>
@@ -1044,23 +1174,107 @@ function SesionesFichasContent() {
                               ? 'Todas las sesiones de esta unidad ya fueron generadas.'
                               : 'No se encontraron sesiones en la unidad. Genera la unidad de aprendizaje primero.'
                             : 'Indica área, grado y unidad para cargar las sesiones.'
-                          : `Configura duración y fecha de cada sesión. Pendientes: ${sesionesGuardadas.length}.${
-                              sesionesYaGeneradasCount > 0
-                                ? ` Ya generadas: ${sesionesYaGeneradasCount}.`
-                                : ''
-                            } Al generar, se procesarán una tras otra.`}
+                          : accesoTodasSesiones
+                            ? `Configura la duración de cada sesión (fecha opcional). Pendientes en esta unidad: ${sesionesGuardadas.length}.${
+                                sesionesYaGeneradasCount > 0
+                                  ? ` Ya generadas aquí: ${sesionesYaGeneradasCount}.`
+                                  : ''
+                              }${
+                                cuotaSesion?.limite != null && cupoGeneracionSesiones != null
+                                  ? ` Tu plan permite generar ${cupoGeneracionSesiones} sesión(es) más ${etiquetaPeriodoCuota(cuotaSesion.periodo)}; al configurar esa cantidad, el resto se deshabilita.`
+                                  : ''
+                              } Al generar, se procesarán una tras otra.`
+                            : `Modo prueba: solo puedes generar la SESIÓN 1. Configura la duración de esa sesión (fecha opcional).${
+                                sesionesYaGeneradasCount > 0
+                                  ? ` Ya generadas: ${sesionesYaGeneradasCount}.`
+                                  : ''
+                              }`}
                     </p>
+                    {accesoTodasSesiones &&
+                      cuotaSesion?.limite != null &&
+                      cupoGeneracionSesiones != null && (
+                        <div className={styles.cuotaSesionesBanner}>
+                          <span className={styles.cuotaSesionesBannerIcon} aria-hidden>
+                            {cupoGeneracionSesiones > 0 ? cupoGeneracionSesiones : '!'}
+                          </span>
+                          <div className={styles.cuotaSesionesBannerText}>
+                            {cupoGeneracionSesiones === 0 ? (
+                              <>
+                                <strong>Cupo mensual agotado</strong>{' '}
+                                {cuotaSesion.mensaje ||
+                                  `Has usado ${cuotaSesion.usados} de ${cuotaSesion.limite} sesiones ${etiquetaPeriodoCuota(cuotaSesion.periodo)}.`}{' '}
+                                <Link href={RUTA_PLANES_PAGO} className={styles.trialSesionesLink}>
+                                  Ver planes
+                                </Link>
+                              </>
+                            ) : (
+                              <>
+                                <strong>Sesiones disponibles en tu plan</strong>{' '}
+                                {cupoGeneracionSesiones} de {cuotaSesion.limite}{' '}
+                                {etiquetaPeriodoCuota(cuotaSesion.periodo)} (
+                                {cuotaSesion.usados} ya generadas en total).{' '}
+                                {sesionesConfiguradasEnCupo > 0
+                                  ? `Configuradas aquí: ${sesionesConfiguradasEnCupo}/${cupoGeneracionSesiones}. `
+                                  : ''}
+                                {sesionesDisponiblesParaConfigurar === 0
+                                  ? 'Alcanzaste el límite para esta tanda; quita la duración de una sesión o mejora tu plan.'
+                                  : `Puedes configurar ${sesionesDisponiblesParaConfigurar} más en esta lista.`}
+                              </>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    {!accesoTodasSesiones && sesionesGuardadas.length > 0 && (
+                      <div className={styles.trialSesionesBanner}>
+                        <span className={styles.trialSesionesBannerIcon} aria-hidden>
+                          !
+                        </span>
+                        <div className={styles.trialSesionesBannerText}>
+                          <strong>Modo prueba gratuita</strong>{' '}
+                          Solo puedes generar la <strong>SESIÓN 1</strong>. Las demás se habilitan
+                          al activar un plan. El documento se descarga en{' '}
+                          <strong>PDF protegido</strong> (no editable).{' '}
+                          <Link href={RUTA_PLANES_PAGO} className={styles.trialSesionesLink}>
+                            Ver planes
+                          </Link>
+                        </div>
+                      </div>
+                    )}
                     {sesionesGuardadas.length > 0 && (
                       <ul className={styles.sesionesPendientesLista}>
-                        {sesionesGuardadas.map((sesion) => (
+                        {sesionesGuardadas.map((sesion) => {
+                          const motivoBloqueo = motivoBloqueoSesion(sesion)
+                          const bloqueada = motivoBloqueo != null
+                          return (
                           <li
                             key={sesion.numeroSesion}
-                            className={styles.sesionPendienteCard}
+                            className={`${styles.sesionPendienteCard} ${
+                              bloqueada ? styles.sesionPendienteCardBloqueada : ''
+                            }`}
                           >
                             <div className={styles.sesionPendienteTitulo}>
                               <strong>Sesión {sesion.numeroSesion}</strong>
+                              {motivoBloqueo === 'trial' && (
+                                <span className={styles.sesionBadgeBloqueada}>Requiere plan</span>
+                              )}
+                              {motivoBloqueo === 'cuota' && (
+                                <span className={styles.sesionBadgeBloqueada}>Sin cupo</span>
+                              )}
                               <span>{sesion.titulo || 'Sin título'}</span>
                             </div>
+                            {motivoBloqueo === 'trial' && (
+                              <p className={styles.sesionBloqueadaMsg}>
+                                Disponible con plan de pago.{' '}
+                                <Link href={RUTA_PLANES_PAGO}>Activar plan</Link>
+                              </p>
+                            )}
+                            {motivoBloqueo === 'cuota' && (
+                              <p className={styles.sesionBloqueadaMsg}>
+                                {cuotaSesion?.mensaje ||
+                                  'Alcanzaste el límite de sesiones de tu plan para este periodo.'}{' '}
+                                <Link href={RUTA_PLANES_PAGO}>Ver planes</Link>
+                              </p>
+                            )}
                             <div className={styles.sesionPendienteCampos}>
                               <div className={styles.formGroup}>
                                 <label htmlFor={`duracion-${sesion.numeroSesion}`}>
@@ -1077,7 +1291,7 @@ function SesionesFichasContent() {
                                     )
                                   }
                                   className={styles.select}
-                                  disabled={generandoSesion}
+                                  disabled={generandoSesion || bloqueada}
                                 >
                                   <option value="">Selecciona la duración</option>
                                   <option value="45">45 minutos</option>
@@ -1087,7 +1301,7 @@ function SesionesFichasContent() {
                               </div>
                               <div className={styles.formGroup}>
                                 <label htmlFor={`fecha-${sesion.numeroSesion}`}>
-                                  Fecha <span className={styles.required}>*</span>
+                                  Fecha (opcional)
                                 </label>
                                 <input
                                   id={`fecha-${sesion.numeroSesion}`}
@@ -1101,12 +1315,13 @@ function SesionesFichasContent() {
                                     )
                                   }
                                   className={styles.input}
-                                  disabled={generandoSesion}
+                                  disabled={generandoSesion || bloqueada}
                                 />
                               </div>
                             </div>
                           </li>
-                        ))}
+                          )
+                        })}
                       </ul>
                     )}
                   </div>
@@ -1119,13 +1334,15 @@ function SesionesFichasContent() {
                 disabled={
                   generandoSesion ||
                   !puedeGenerarLote ||
-                  loadingSesiones
+                  loadingSesiones ||
+                  sesionesGenerables.length === 0 ||
+                  (cupoGeneracionSesiones != null && cupoGeneracionSesiones === 0)
                 }
               >
                 {generandoSesion
                   ? 'Generando sesiones...'
-                  : sesionesGuardadas.length > 1
-                    ? `Generar ${sesionesGuardadas.length} sesiones`
+                  : sesionesGenerables.length > 1
+                    ? `Generar ${sesionesGenerables.length} sesiones`
                     : 'Generar documento'}
               </button>
             </form>
@@ -1254,6 +1471,8 @@ function SesionesFichasContent() {
         )}
 
       </main>
+
+      {AvisoModalEl}
     </>
   )
 }

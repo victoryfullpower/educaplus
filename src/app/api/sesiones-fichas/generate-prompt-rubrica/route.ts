@@ -8,7 +8,7 @@ import { prisma } from '@/lib/prisma'
 
 export const dynamic = 'force-dynamic'
 
-const TEMPLATE_NAME = 'PROMPT_Rubrica.docx'
+const TEMPLATE_NAME = 'Prompt_Rubrica.docx'
 
 /**
  * Genera el documento Word "Prompt Rúbrica" a partir del template PROMPT_Rubrica.docx

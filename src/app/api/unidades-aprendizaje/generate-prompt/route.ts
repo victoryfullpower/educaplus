@@ -1,9 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server'
 import fs from 'fs'
-import path from 'path'
 import { prisma } from '@/lib/prisma'
 import { Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell, WidthType, BorderStyle, AlignmentType, ShadingType } from 'docx'
 import mammoth from 'mammoth'
+import { resolverNumeroSesionesForm } from '@/lib/unidad-sesiones-por-area'
+import {
+  generarCompetenciasBdTexto,
+  generarMatrizTexto
+} from '@/lib/matriz-unidad-prompt'
+import {
+  nombreAreaDesdeForm,
+  resolverPromptUnidadPorArea
+} from '@/lib/prompt-unidad-por-area'
 
 export const dynamic = 'force-dynamic'
 
@@ -30,16 +38,24 @@ export async function POST(request: NextRequest) {
 
     console.log('🤖 Generando texto por prompt...')
 
-    // Leer directamente el Word del prompt (igual que generate-prompt-word)
-    const promptWordPath = path.join(process.cwd(), 'templates', 'PROMT_UNIDAD DE APRENDIZAJE.docx')
-    if (!fs.existsSync(promptWordPath)) {
+    const areaParaPrompt = nombreAreaDesdeForm(formData)
+    const promptResuelto = resolverPromptUnidadPorArea(areaParaPrompt)
+    const promptWordPath = promptResuelto.path
+    if (!promptWordPath || !fs.existsSync(promptWordPath)) {
       return NextResponse.json(
-        { error: 'Archivo de prompt Word no encontrado' },
+        {
+          error: `No se encontró prompt Word para el área "${areaParaPrompt || '(sin área)'}". Coloca el archivo en templates/prompstUA con el nombre del área.`
+        },
         { status: 404 }
       )
     }
 
-    console.log('📄 Leyendo archivo Word directamente...')
+    console.log(
+      `📄 Prompt UA área="${areaParaPrompt}" → ${
+        promptResuelto.matchedFile ||
+        (promptResuelto.usedFallback ? 'fallback global' : promptWordPath)
+      }`
+    )
     const wordBuffer = fs.readFileSync(promptWordPath)
     const result = await mammoth.extractRawText({ buffer: wordBuffer })
     let promptText = result.value || ''
@@ -123,9 +139,18 @@ export async function POST(request: NextRequest) {
       ciclo: formData.ciclo || '',
       tipoie: formData.tipoIE === '1' ? 'Pública' : formData.tipoIE === '2' ? 'Privado' : '',
       situacionsignficativa: formData.situacionSignificativa || '',
-      numsesiones: formData.sesiones?.length?.toString() || '0',
+      numsesiones: String(resolverNumeroSesionesForm(formData) || 0),
       producto: formData.producto || '',
-      competencias: competenciasParaPrompt.length > 0 ? competenciasParaPrompt : []
+      titulodeunidad: String(
+        formData.tituloUnidad ||
+          formData.titulodeunidad ||
+          (formData.unidad && formData.area
+            ? `Unidad ${formData.unidad}: ${formData.area}`
+            : '')
+      ),
+      campotematico: String(formData.campoTematico || formData.campotematico || ''),
+      competencias: competenciasParaPrompt.length > 0 ? competenciasParaPrompt : [],
+      competenciasdelabd: generarCompetenciasBdTexto(competenciasParaPrompt)
     }
 
     // Reemplazar variables manualmente
@@ -136,6 +161,12 @@ export async function POST(request: NextRequest) {
     promptText = promptText.replace(/\{\{situacionsignficativa\}\}/g, promptData.situacionsignficativa)
     promptText = promptText.replace(/\{\{numsesiones\}\}/g, promptData.numsesiones)
     promptText = promptText.replace(/\{\{producto\}\}/g, promptData.producto)
+    promptText = promptText.replace(/\{\{titulodeunidad\}\}/g, promptData.titulodeunidad)
+    promptText = promptText.replace(/\{\{campotematico\}\}/g, promptData.campotematico)
+    promptText = promptText.replace(
+      /\{\{competenciasdelabd\}\}/g,
+      promptData.competenciasdelabd
+    )
 
     // Reemplazar loop de competencias
     if (promptData.competencias.length > 0) {
@@ -150,33 +181,7 @@ export async function POST(request: NextRequest) {
     console.log(`🔍 Placeholder {{matriz}} encontrado: ${tieneMatriz}`)
 
     if (tieneMatriz) {
-      // Generar matriz en formato de texto plano para GPT
-      let matrizTexto = ''
-      
-      if (competenciasConDatos.length === 0) {
-        matrizTexto = 'No se encontraron competencias para mostrar en la matriz.'
-      } else {
-        competenciasConDatos.forEach((competencia, compIdx) => {
-          if (compIdx > 0) {
-            matrizTexto += '\n\n'
-          }
-          
-          matrizTexto += `${competencia.competenciaNumero}: ${competencia.competenciaDescripcion}\n`
-          matrizTexto += 'COMPETENCIA | CAPACIDADES | DESEMPEÑOS PRECISADOS\n'
-          matrizTexto += '--- | --- | ---\n'
-          
-          competencia.capacidades.forEach((capacidad, capIdx) => {
-            const desempeniosTexto = capacidad.desempenios
-              .map((des, idx) => `${idx + 1}. ${des}`)
-              .join('; ')
-            
-            const competenciaTexto = capIdx === 0 ? competencia.competenciaDescripcion : ''
-            matrizTexto += `${competenciaTexto} | ${capacidad.capacidadDescripcion} | ${desempeniosTexto}\n`
-          })
-        })
-      }
-      
-      // Reemplazar {{matriz}} con el texto de la matriz
+      const matrizTexto = generarMatrizTexto(competenciasConDatos)
       promptText = promptText.replace('{{matriz}}', matrizTexto)
       console.log(`✅ Matriz generada en formato texto plano (${matrizTexto.length} caracteres)`)
     }

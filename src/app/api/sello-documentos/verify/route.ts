@@ -3,7 +3,7 @@ import { extensionSello, leerSelloArchivo } from '@/lib/documento-sello'
 
 export const dynamic = 'force-dynamic'
 
-const MAX_FILE_BYTES = 20 * 1024 * 1024
+const MAX_FILE_BYTES = 40 * 1024 * 1024
 
 export async function POST(request: NextRequest) {
   try {
@@ -27,7 +27,7 @@ export async function POST(request: NextRequest) {
 
     if (archivo.size > MAX_FILE_BYTES) {
       return NextResponse.json(
-        { error: 'El archivo supera el límite de 20 MB' },
+        { error: 'El archivo supera el límite de 40 MB' },
         { status: 400 }
       )
     }

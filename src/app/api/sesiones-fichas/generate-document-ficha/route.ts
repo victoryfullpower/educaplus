@@ -2,19 +2,215 @@ import { NextRequest, NextResponse } from 'next/server'
 import fs from 'fs'
 import path from 'path'
 import OpenAI from 'openai'
+import mammoth from 'mammoth'
 import Docxtemplater from 'docxtemplater'
 import PizZip from 'pizzip'
-import mammoth from 'mammoth'
 import { getUserId } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
+import {
+  consumirCreditoRegeneracion,
+  tieneSuscripcionActivaPara,
+  validarRegeneracionIA
+} from '@/lib/acceso-usuario'
+import { MSG_TRIAL_FICHA_COTEJO_REQUIERE_PLAN } from '@/lib/acceso-trial'
+import { construirWordDesdeRespuestaGpt } from '@/lib/respuesta-prompt-word'
+import { parsearSaberesSesion } from '@/lib/ficha-vista-html'
+import {
+  formatearProcesosDidacticosPrompt,
+  listarDescripcionesProcesosDidacticos
+} from '@/lib/procesos-didacticos-sesion'
 
 export const dynamic = 'force-dynamic'
+export const maxDuration = 180
 
 /** Plantilla: FICHA DE APRENDIZAJE.docx - Llaves: grado, titulodesesion, proposito, competencia, capacidad, evidencia, criterios, saber1, saber2, saber3, respuestaprompt (párrafos + tablas como en Respuesta prompt) */
 const TEMPLATE_NAME = 'FICHA DE APRENDIZAJE.docx'
-const PROMPT_TEMPLATE_NAME = 'PROMT_Ficha.docx'
-const MODELO_OBLIGATORIO = 'gpt-5-mini'
+/** Prompt asociado a la ficha (se rellena con los datos de la sesión y se envía a GPT). */
+const PROMPT_FICHA_TEMPLATE = 'PROMT_Ficha.docx'
+const MODELO_GPT = 'gpt-5-mini'
+const SYSTEM_PROMPT_FICHA =
+  'Eres un especialista en planificación curricular del MINEDU (Perú). Sigue exactamente las instrucciones del usuario y responde solo con la ficha solicitada.'
 const RESPUESTAPROMPT_PLACEHOLDER = 'RESPUESTAPROMPT_FICHA_PLACEHOLDER'
+
+type SesionConUnidad = Awaited<ReturnType<typeof obtenerSesionConUnidad>>
+
+function limpiarBrFicha(s: string): string {
+  return (s || '').replace(/<br\s*\/?>/gi, '\n').replace(/<BR\s*\/?>/gi, '\n').trim()
+}
+
+/**
+ * Datos para rellenar PROMT_Ficha.docx.
+ * Llaves del template: area, grado, titulosesion, proposito, campotematico,
+ * competencia, procesosdidacticos, evidencia, criterios, duracion, desarrollo_sesion.
+ */
+async function datosPromptFichaDesdeSesion(
+  sesion: NonNullable<SesionConUnidad>
+): Promise<Record<string, string>> {
+  const u = sesion.unidadAprendizaje
+  const sinPrefijoProposito = (s: string) =>
+    (s || '').replace(/^\s*Propósito\s*:\s*/i, '').trim()
+
+  const competenciasArr = Array.isArray(sesion.competenciasSeleccionadas)
+    ? (sesion.competenciasSeleccionadas as string[])
+    : []
+  const competencia = competenciasArr.length > 0 ? String(competenciasArr[0]).trim() : ''
+
+  const capacidadesArr = Array.isArray(sesion.capacidadesSeleccionadas)
+    ? (sesion.capacidadesSeleccionadas as string[])
+    : []
+  const capacidad = capacidadesArr
+    .filter((c: string) => c && String(c).trim())
+    .map((c: string) => `- ${limpiarBrFicha(c)}`)
+    .join('\n')
+
+  const duracionRaw = (sesion.duracion ?? u.duracion ?? '').trim()
+  const desarrolloDurante = (sesion.desarrollodurante ?? '').trim()
+  const desarrolloLegacy = (sesion.desarrollo ?? '').trim()
+  const desarrollo_sesion = desarrolloDurante || desarrolloLegacy
+
+  const areaId = sesion.areaId ?? u.areaId
+  const procesosdidacticos = formatearProcesosDidacticosPrompt(
+    await listarDescripcionesProcesosDidacticos(areaId, competencia)
+  )
+
+  return {
+    area: (sesion.area ?? u.area ?? '').trim(),
+    grado: (sesion.grado ?? u.grado ?? '').trim(),
+    titulosesion: (sesion.titulo ?? '').trim(),
+    proposito: sinPrefijoProposito(sesion.proposito ?? ''),
+    campotematico: limpiarBrFicha(sesion.campoTematico ?? ''),
+    competencia,
+    capacidad,
+    procesosdidacticos,
+    evidencia: limpiarBrFicha(sesion.evidencias ?? ''),
+    criterios: limpiarBrFicha(sesion.criterios ?? ''),
+    duracion: duracionRaw ? `${duracionRaw} minutos` : '',
+    desarrollo_sesion,
+    // Compatibilidad con llaves antiguas / alternativas
+    desarrollo: desarrollo_sesion,
+    desarrolloantes: (sesion.desarrolloantes ?? '').trim(),
+    desarrollodurante: desarrolloDurante,
+    desarrollodespues: (sesion.desarrollodespues ?? '').trim()
+  }
+}
+
+/** Rellena PROMT_Ficha.docx con los datos de la sesión y devuelve el buffer Word. */
+async function renderPromptFichaDocx(
+  sesion: NonNullable<SesionConUnidad>,
+  promptData?: Record<string, string>
+): Promise<Buffer> {
+  const data = promptData ?? (await datosPromptFichaDesdeSesion(sesion))
+  const promptPath = path.join(process.cwd(), 'templates', PROMPT_FICHA_TEMPLATE)
+  if (!fs.existsSync(promptPath)) {
+    throw new Error(`Plantilla de prompt no encontrada: ${PROMPT_FICHA_TEMPLATE}`)
+  }
+  const promptContent = fs.readFileSync(promptPath, 'binary')
+  const promptZip = new PizZip(promptContent)
+  const promptDoc = new Docxtemplater(promptZip, {
+    paragraphLoop: true,
+    linebreaks: true,
+    delimiters: { start: '{{', end: '}}' },
+    nullGetter: () => ''
+  })
+  promptDoc.render(data)
+  return promptDoc.getZip().generate({
+    type: 'nodebuffer',
+    compression: 'DEFLATE'
+  }) as Buffer
+}
+
+async function obtenerSesionConUnidad(sesionId: number) {
+  return prisma.sesion.findFirst({
+    where: { id: sesionId },
+    include: { unidadAprendizaje: true, fichaAprendizaje: true }
+  })
+}
+
+/**
+ * Genera la ficha con su prompt (PROMT_Ficha.docx) usando los datos de la sesión,
+ * llama a GPT y guarda el registro FichaAprendizaje. Devuelve los campos de la ficha.
+ */
+async function generarYGuardarFicha(sesion: NonNullable<SesionConUnidad>) {
+  if (!process.env.OPENAI_API_KEY) {
+    throw new Error('OPENAI_API_KEY no está configurada. La ficha requiere GPT.')
+  }
+
+  const promptData = await datosPromptFichaDesdeSesion(sesion)
+  const {
+    area,
+    grado,
+    titulosesion,
+    proposito,
+    competencia,
+    capacidad,
+    evidencia,
+    criterios,
+    duracion,
+    desarrolloantes,
+    desarrollodurante,
+    desarrollodespues
+  } = promptData
+
+  const promptBuffer = await renderPromptFichaDocx(sesion, promptData)
+  const extractResult = await mammoth.extractRawText({ buffer: promptBuffer })
+  const promptText = (extractResult.value || '').trim()
+  if (!promptText) {
+    throw new Error('No se pudo extraer el texto del prompt de ficha')
+  }
+
+  const openaiClient = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
+  const requestConfig = {
+    model: MODELO_GPT,
+    messages: [
+      { role: 'system' as const, content: SYSTEM_PROMPT_FICHA },
+      { role: 'user' as const, content: promptText }
+    ],
+    top_p: 1,
+    max_completion_tokens: 16384
+  }
+  let completion = await openaiClient.chat.completions.create(requestConfig)
+  let respuestaprompt = (completion.choices?.[0]?.message?.content || '').trim()
+  if (!respuestaprompt) {
+    completion = await openaiClient.chat.completions.create(requestConfig)
+    respuestaprompt = (completion.choices?.[0]?.message?.content || '').trim()
+  }
+  if (!respuestaprompt) {
+    throw new Error('La IA no generó ninguna respuesta para la ficha')
+  }
+  if (/^```/.test(respuestaprompt)) {
+    respuestaprompt = respuestaprompt.replace(/^```[\w]*\n?/, '').replace(/\n?```\s*$/, '').trim()
+  }
+
+  const saberesLista = parsearSaberesSesion(sesion.saberes)
+  const fichaFields = {
+    area,
+    grado,
+    titulosesion,
+    titulodesesion: titulosesion,
+    proposito,
+    competencia,
+    capacidad,
+    evidencia,
+    criterios,
+    saber1: saberesLista[0] || '',
+    saber2: saberesLista[1] || '',
+    saber3: saberesLista[2] || '',
+    respuestaprompt,
+    duracion,
+    desarrolloantes,
+    desarrollodurante,
+    desarrollodespues
+  }
+
+  await prisma.fichaAprendizaje.upsert({
+    where: { idsesion: sesion.id },
+    create: { idsesion: sesion.id, ...fichaFields },
+    update: fichaFields
+  })
+  console.log('[generate-document-ficha] Ficha generada con GPT y guardada para sesión', sesion.id)
+
+  return fichaFields
+}
 
 /**
  * Genera el documento Word de FICHA DE APRENDIZAJE (no sesión)
@@ -41,10 +237,7 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    const sesion = await prisma.sesion.findFirst({
-      where: { id: sesionId },
-      include: { unidadAprendizaje: true, fichaAprendizaje: true }
-    })
+    const sesion = await obtenerSesionConUnidad(sesionId)
 
     if (!sesion || sesion.unidadAprendizaje.idusuario !== userId) {
       return NextResponse.json(
@@ -54,6 +247,37 @@ export async function POST(request: NextRequest) {
     }
 
     const u = sesion.unidadAprendizaje
+    const tieneSuscripcion = await tieneSuscripcionActivaPara(
+      userId,
+      u.areaId,
+      u.gradoId
+    )
+    if (!tieneSuscripcion) {
+      return NextResponse.json(
+        {
+          error: MSG_TRIAL_FICHA_COTEJO_REQUIERE_PLAN,
+          code: 'TRIAL_FICHA_COTEJO_PLAN'
+        },
+        { status: 403 }
+      )
+    }
+
+    if (forceRegenerate) {
+      const regen = await validarRegeneracionIA(userId, u.areaId, u.gradoId)
+      if (!regen.ok) {
+        return NextResponse.json({ error: regen.error, code: regen.code }, { status: 403 })
+      }
+      await consumirCreditoRegeneracion(regen.suscripcionId)
+      return NextResponse.json(
+        {
+          error:
+            'Para regenerar la ficha, regenera la sesión completa (incluye solucionario y rúbrica).',
+          code: 'REGENERAR_SESION_REQUERIDA'
+        },
+        { status: 400 }
+      )
+    }
+
     const limpiarBr = (s: string) => (s || '').replace(/<br\s*\/?>/gi, '\n').replace(/<BR\s*\/?>/gi, '\n').trim()
     const sinPrefijoProposito = (s: string) => (s || '').replace(/^\s*Propósito\s*:\s*/i, '').trim()
 
@@ -75,6 +299,7 @@ export async function POST(request: NextRequest) {
     let respuestaprompt = ''
 
     const fichaGuardada = !forceRegenerate ? sesion.fichaAprendizaje : null
+    const fichaDesdeGuardado = !!fichaGuardada
     if (fichaGuardada) {
       area = (fichaGuardada.area ?? '').trim()
       grado = (fichaGuardada.grado ?? '').trim()
@@ -87,107 +312,48 @@ export async function POST(request: NextRequest) {
       saber1 = (fichaGuardada.saber1 ?? '').trim()
       saber2 = (fichaGuardada.saber2 ?? '').trim()
       saber3 = (fichaGuardada.saber3 ?? '').trim()
+      // Preferir siempre los saberes guardados en la sesión
+      {
+        const desdeSesion = parsearSaberesSesion(sesion.saberes)
+        if (desdeSesion.length > 0) {
+          saber1 = desdeSesion[0] || saber1
+          saber2 = desdeSesion[1] || ''
+          saber3 = desdeSesion[2] || ''
+        }
+      }
       duracion = (fichaGuardada.duracion ?? '').trim()
       desarrolloantes = (fichaGuardada.desarrolloantes ?? '').trim()
       desarrollodurante = (fichaGuardada.desarrollodurante ?? '').trim()
       desarrollodespues = (fichaGuardada.desarrollodespues ?? '').trim()
       respuestaprompt = (fichaGuardada.respuestaprompt ?? '').trim()
     } else {
-      const competenciasArr = Array.isArray(sesion.competenciasSeleccionadas)
-        ? sesion.competenciasSeleccionadas as string[]
-        : []
-      competencia = competenciasArr.length > 0 ? String(competenciasArr[0]).trim() : ''
-      const capacidadesArr = Array.isArray(sesion.capacidadesSeleccionadas)
-        ? sesion.capacidadesSeleccionadas as string[]
-        : []
-      capacidad = capacidadesArr
-        .filter((c: string) => c && String(c).trim())
-        .map((c: string) => `- ${limpiarBr(c)}`)
-        .join('\n')
-      area = (sesion.area ?? u.area ?? '').trim()
-      grado = (sesion.grado ?? u.grado ?? '').trim()
-      const duracionRaw = (sesion.duracion ?? u.duracion ?? '').trim()
-      duracion = duracionRaw ? `${duracionRaw} minutos` : ''
-      tituloSesion = (sesion.titulo ?? '').trim()
-      proposito = sinPrefijoProposito(sesion.proposito ?? '')
-      evidencia = limpiarBr(sesion.evidencias ?? '')
-      criterios = limpiarBr(sesion.criterios ?? '')
-      const saberesTexto = limpiarBr(sesion.saberes ?? '')
-      const saberesPartes = saberesTexto.split(/\n+/).map((s: string) => s.trim()).filter(Boolean)
-      saber1 = saberesPartes[0] ?? ''
-      saber2 = saberesPartes[1] ?? ''
-      saber3 = saberesPartes[2] ?? ''
-      desarrolloantes = (sesion.desarrolloantes ?? '').trim()
-      desarrollodurante = (sesion.desarrollodurante ?? '').trim()
-      desarrollodespues = (sesion.desarrollodespues ?? '').trim()
-
-      if (process.env.OPENAI_API_KEY) {
-      const dataPrompt = {
-        area,
-        grado,
-        titulosesion: (sesion.titulo ?? '').trim(),
-        proposito: sinPrefijoProposito(sesion.proposito ?? ''),
-        competencia,
-        capacidad,
-        evidencia: limpiarBr(sesion.evidencias ?? ''),
-        criterios: limpiarBr(sesion.criterios ?? ''),
-        duracion,
-        desarrolloantes: (sesion.desarrolloantes ?? '').trim(),
-        desarrollodurante: (sesion.desarrollodurante ?? '').trim(),
-        desarrollodespues: (sesion.desarrollodespues ?? '').trim()
-      }
-      const promptTemplatePath = path.join(process.cwd(), 'templates', PROMPT_TEMPLATE_NAME)
-      if (fs.existsSync(promptTemplatePath)) {
-        try {
-          const contentPrompt = fs.readFileSync(promptTemplatePath, 'binary')
-          const zipPrompt = new PizZip(contentPrompt)
-          const templateDoc = new Docxtemplater(zipPrompt, {
-            paragraphLoop: true,
-            linebreaks: true,
-            delimiters: { start: '{{', end: '}}' },
-            nullGetter: () => ''
-          })
-          templateDoc.render(dataPrompt)
-          const docxBufferPrompt = templateDoc.getZip().generate({ type: 'nodebuffer', compression: 'DEFLATE' })
-          const extractResult = await mammoth.extractRawText({ buffer: docxBufferPrompt as Buffer })
-          const promptText = (extractResult.value || '').trim()
-          if (promptText) {
-            const openaiClient = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
-            let completion = await openaiClient.chat.completions.create({
-              model: MODELO_OBLIGATORIO,
-              messages: [
-                { role: 'system' as const, content: 'Responde de forma clara y estructurada.' },
-                { role: 'user' as const, content: promptText }
-              ],
-              top_p: 1,
-              max_completion_tokens: 16384
-            })
-            let gptResponse = (completion.choices?.[0]?.message?.content || '').trim()
-            if (!gptResponse) {
-              completion = await openaiClient.chat.completions.create({
-                model: MODELO_OBLIGATORIO,
-                messages: [
-                  { role: 'system' as const, content: 'Responde de forma clara y estructurada.' },
-                  { role: 'user' as const, content: promptText }
-                ],
-                top_p: 1,
-                max_completion_tokens: 16384
-              })
-              gptResponse = (completion.choices?.[0]?.message?.content || '').trim()
-            }
-            if (gptResponse) respuestaprompt = gptResponse.replace(/<br\s*\/?>/gi, '\n').replace(/<BR\s*\/?>/gi, '\n')
-          }
-        } catch (err) {
-          console.error('Error al obtener respuesta IA para respuestaprompt:', err)
-        }
-      }
-    }
+      // No hay ficha guardada: generarla con su prompt (PROMT_Ficha.docx) y guardarla.
+      const generada = await generarYGuardarFicha(sesion)
+      area = generada.area
+      grado = generada.grado
+      tituloSesion = generada.titulosesion
+      proposito = generada.proposito
+      competencia = generada.competencia
+      capacidad = generada.capacidad
+      evidencia = generada.evidencia
+      criterios = generada.criterios
+      saber1 = generada.saber1
+      saber2 = generada.saber2
+      saber3 = generada.saber3
+      duracion = generada.duracion
+      desarrolloantes = generada.desarrolloantes
+      desarrollodurante = generada.desarrollodurante
+      desarrollodespues = generada.desarrollodespues
+      respuestaprompt = generada.respuestaprompt
     }
 
     const parsearFilasTabla = (linea: string): string[] => {
       const partes = linea.split('|').map((c: string) => c.trim())
       if (partes.length <= 1) return []
-      const sinExtremos = partes[0] === '' && partes[partes.length - 1] === '' ? partes.slice(1, -1) : partes
+      const sinExtremos =
+        partes[0] === '' && partes[partes.length - 1] === ''
+          ? partes.slice(1, -1)
+          : partes
       return sinExtremos.filter(() => true)
     }
     const esLineaSeparadorTabla = (linea: string) => {
@@ -339,65 +505,68 @@ export async function POST(request: NextRequest) {
       compression: 'DEFLATE'
     })
 
-    if (!fichaGuardada && respuestaprompt) {
-      try {
-        await prisma.fichaAprendizaje.upsert({
-          where: { idsesion: sesionId },
-          create: {
-            idsesion: sesionId,
-            area,
-            grado,
-            titulosesion: tituloSesion,
-            titulodesesion: tituloSesion,
-            proposito,
-            competencia,
-            capacidad,
-            evidencia,
-            criterios,
-            saber1,
-            saber2,
-            saber3,
-            respuestaprompt,
-            duracion,
-            desarrolloantes,
-            desarrollodurante,
-            desarrollodespues
-          },
-          update: {
-            area,
-            grado,
-            titulosesion: tituloSesion,
-            titulodesesion: tituloSesion,
-            proposito,
-            competencia,
-            capacidad,
-            evidencia,
-            criterios,
-            saber1,
-            saber2,
-            saber3,
-            respuestaprompt,
-            duracion,
-            desarrolloantes,
-            desarrollodurante,
-            desarrollodespues
-          }
-        })
-      } catch (err) {
-        console.error('Error al guardar FichaAprendizaje:', err)
-      }
-    }
-
     const ts = Date.now()
     const baseName = `Ficha_Aprendizaje_${(area || 'documento').replace(/\s+/g, '_')}_${ts}`.replace(/[^a-zA-Z0-9_.-]/g, '')
     const fileNameDocx = `${baseName}.docx`
+    const areaSlug = (area || 'documento').replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_áéíóúñÁÉÍÓÚÑ]/g, '')
+
+    const formatoJson = body.formato === 'json'
+
+    if (formatoJson) {
+      const respuestaBuffer = respuestaprompt
+        ? await construirWordDesdeRespuestaGpt(respuestaprompt)
+        : Buffer.alloc(0)
+      const promptBuffer = await renderPromptFichaDocx(sesion)
+      const saberesDesdeSesion = parsearSaberesSesion(sesion.saberes)
+      const saberesVista =
+        saberesDesdeSesion.length > 0
+          ? saberesDesdeSesion
+          : [saber1, saber2, saber3].filter(Boolean)
+
+      return NextResponse.json({
+        from: fichaDesdeGuardado ? 'saved' : 'generated',
+        vista: {
+          sesionId,
+          numeroSesion: sesion.numeroSesion,
+          tituloSesion: tituloSesion,
+          tituloDesesion: tituloSesion,
+          area,
+          grado,
+          docente: (u.docente ?? '').trim(),
+          proposito,
+          competencia,
+          capacidad,
+          evidencia,
+          criterios,
+          saber1: saberesDesdeSesion[0] || saber1,
+          saber2: saberesDesdeSesion[1] || saber2,
+          saber3: saberesDesdeSesion[2] || saber3,
+          saberes: saberesVista,
+          respuestaprompt
+        },
+        documento: {
+          fileName: fileNameDocx,
+          docxBase64: Buffer.from(buffer as Buffer).toString('base64')
+        },
+        prompt: {
+          fileName: `PROMPT_FICHA_${areaSlug}_S${sesion.numeroSesion ?? sesionId}_${ts}.docx`,
+          docxBase64: Buffer.from(promptBuffer).toString('base64')
+        },
+        respuesta: respuestaprompt
+          ? {
+              fileName: `RESPUESTA_IA_FICHA_${areaSlug}_S${sesion.numeroSesion ?? sesionId}_${ts}.docx`,
+              docxBase64: Buffer.from(respuestaBuffer).toString('base64')
+            }
+          : undefined
+      })
+    }
 
     return new NextResponse(Uint8Array.from(buffer as Buffer), {
       status: 200,
       headers: {
         'Content-Type': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
         'Content-Disposition': `attachment; filename="${fileNameDocx}"`,
-        'X-Ficha-From': fichaGuardada ? 'saved' : 'ia'
+        'X-Ficha-From': fichaDesdeGuardado ? 'saved' : 'generated'
       }
     })
   } catch (error) {

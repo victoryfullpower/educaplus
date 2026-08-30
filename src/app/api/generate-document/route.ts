@@ -6,6 +6,31 @@ import path from 'path'
 import { prisma } from '@/lib/prisma'
 import { generateSituacionSignificativa } from '@/lib/generate-situacion-significativa'
 import { getUserId } from '@/lib/auth'
+import {
+  marcarTrialConsumido,
+  MSG_TRIAL_AGOTADO,
+  puedeGenerarConTrial,
+  tieneSuscripcionActivaPara,
+  validarRegeneracionIA,
+  consumirCreditoRegeneracion
+} from '@/lib/acceso-usuario'
+import { assertPuedeCrearPlanAnual } from '@/lib/limites-plan-anual'
+import { unidadPlanTieneConfiguracion } from '@/lib/acceso-cliente'
+import { MSG_TRIAL_UNA_UNIDAD_PLAN } from '@/lib/error-generacion-documento'
+import {
+  CODE_PDF_TRIAL_NO_DISPONIBLE,
+  MSG_PDF_TRIAL_NO_DISPONIBLE,
+  prepararEntregaDocumento
+} from '@/lib/entrega-documento-trial'
+import {
+  generarDocxRespuestasIAPlanAnual,
+  type RespuestaIAPlanUnidad
+} from '@/lib/plan-anual-respuesta-ia-docx'
+import JSZip from 'jszip'
+
+export const dynamic = 'force-dynamic'
+export const runtime = 'nodejs'
+export const maxDuration = 180
 
 function normalizePlanIdField(v: unknown): string {
   if (v === undefined || v === null || v === '') return ''
@@ -142,10 +167,13 @@ function resolvePlanAnualTemplatePath(formData: any): string {
   return defaultTemplate
 }
 
-export const dynamic = 'force-dynamic'
-
 export async function POST(request: NextRequest) {
   try {
+    const userId = await getUserId(request)
+    if (!userId) {
+      return NextResponse.json({ error: 'No autenticado' }, { status: 401 })
+    }
+
     const requestBody = await request.json()
     const {
       formData: formDataInput,
@@ -161,6 +189,70 @@ export async function POST(request: NextRequest) {
 
     // Algunos clientes envían solo el objeto de formulario (sin wrapper `formData`)
     const formData = formDataInput != null ? formDataInput : requestBody
+    const areaIdAcceso = formData?.areaId != null ? String(formData.areaId) : null
+    const gradoIdAcceso = formData?.gradoId != null ? String(formData.gradoId) : null
+
+    const planIdParsed =
+      planAnualId !== undefined && planAnualId !== null && planAnualId !== ''
+        ? parseInt(String(planAnualId), 10)
+        : NaN
+    const esEdicionPlan = Number.isFinite(planIdParsed)
+    if (!soloExportar && !esEdicionPlan) {
+      const limitePlan = await assertPuedeCrearPlanAnual(userId)
+      if (!limitePlan.ok) {
+        return NextResponse.json(
+          { error: limitePlan.error, code: limitePlan.code },
+          { status: 403 }
+        )
+      }
+    }
+
+    const tieneSuscripcion = await tieneSuscripcionActivaPara(
+      userId,
+      areaIdAcceso,
+      gradoIdAcceso
+    )
+    const regeneracionSelectiva =
+      !soloExportar &&
+      modoGeneracion === 'actualizar' &&
+      Array.isArray(unidadesParaGenerar) &&
+      unidadesParaGenerar.length > 0
+    // Créditos de regeneración: solo con suscripción (el trial usa puedeGenerarConTrial más abajo).
+    // La primera generación también envía modoGeneracion 'regenerar'; no debe bloquear el trial.
+    const esRegeneracionIA =
+      tieneSuscripcion &&
+      !soloExportar &&
+      (modoGeneracion === 'regenerar' || regeneracionSelectiva)
+    let suscripcionRegenId: number | null = null
+    if (esRegeneracionIA) {
+      const regen = await validarRegeneracionIA(userId, areaIdAcceso, gradoIdAcceso)
+      if (!regen.ok) {
+        return NextResponse.json({ error: regen.error, code: regen.code }, { status: 403 })
+      }
+      suscripcionRegenId = regen.suscripcionId
+    }
+    const consumirTrialPlan = !tieneSuscripcion
+    if (consumirTrialPlan && !soloExportar) {
+      const puedeTrial = await puedeGenerarConTrial(userId, 'plan')
+      if (!puedeTrial) {
+        return NextResponse.json(
+          { error: MSG_TRIAL_AGOTADO, code: 'TRIAL_AGOTADO_PLAN' },
+          { status: 403 }
+        )
+      }
+      if (Array.isArray(unidades)) {
+        let unidadesConDatos = 0
+        for (let i = 1; i < unidades.length && i <= 8; i++) {
+          if (unidadPlanTieneConfiguracion(unidades[i] ?? {})) unidadesConDatos += 1
+        }
+        if (unidadesConDatos > 1) {
+          return NextResponse.json(
+            { error: MSG_TRIAL_UNA_UNIDAD_PLAN, code: 'TRIAL_UNA_UNIDAD_PLAN' },
+            { status: 403 }
+          )
+        }
+      }
+    }
 
     console.log('📥 [DEBUG] Datos recibidos:', {
       tieneFormData: !!formData,
@@ -267,7 +359,9 @@ export async function POST(request: NextRequest) {
         conocimientosSeleccionados: [],
         desempeniosSeleccionados: [],
         tituloUnidad: '',
-        tieneTituloIA: true
+        situacionSignificativa: '',
+        tieneTituloIA: true,
+        tieneSituacionIA: true
       }
     }
 
@@ -276,6 +370,7 @@ export async function POST(request: NextRequest) {
 
     // Almacenar datos generados para guardar en el plan anual
     const unidadesConDatosGenerados: any[] = []
+    const respuestasIAPorUnidad: RespuestaIAPlanUnidad[] = []
 
     for (let i = 0; i < unidadesParaProcesar.length; i++) {
       const unidad = unidadesParaProcesar[i]
@@ -288,7 +383,11 @@ export async function POST(request: NextRequest) {
         conocimientosSeleccionados: unidad.conocimientosSeleccionados?.length || 0,
         desempeniosSeleccionados: unidad.desempeniosSeleccionados?.length || 0,
         tituloUnidad: unidad.tituloUnidad || '(vacío)',
-        tieneTituloIA: unidad.tieneTituloIA
+        tieneTituloIA: unidad.tieneTituloIA,
+        tieneSituacionIA: unidad.tieneSituacionIA,
+        situacionSignificativa: unidad.situacionSignificativa
+          ? `${String(unidad.situacionSignificativa).substring(0, 50)}...`
+          : '(vacío)'
       })
       
       // Generar situación significativa para la unidad
@@ -296,11 +395,22 @@ export async function POST(request: NextRequest) {
       let tituloUnidad = unidad.tituloUnidad || ''
       let problemaPotencialidad = unidad.problemaPotencialidad || ''
       let campoTematico = '' // Campo temático ya no se usa, mantener vacío
+
+      const generarTituloConIA = unidad.tieneTituloIA !== false
+      const generarSituacionConIA = unidad.tieneSituacionIA !== false
       
-      // Si tieneTituloIA es false, usar el título ingresado manualmente
-      if (!unidad.tieneTituloIA && unidad.tituloUnidad) {
+      // Si título es manual, usar el ingresado
+      if (!generarTituloConIA && unidad.tituloUnidad) {
         tituloUnidad = unidad.tituloUnidad
         console.log(`📝 [DEBUG] Usando título ingresado manualmente para unidad ${i}: "${tituloUnidad}"`)
+      }
+
+      // Si situación es manual, usar la ingresada
+      if (!generarSituacionConIA && unidad.situacionSignificativa) {
+        situacionSignificativa = String(unidad.situacionSignificativa)
+        console.log(
+          `📝 [DEBUG] Usando situación significativa manual para unidad ${i}: "${situacionSignificativa.substring(0, 50)}..."`
+        )
       }
       
       // Verificar si esta unidad tiene datos existentes que debemos usar
@@ -320,10 +430,30 @@ export async function POST(request: NextRequest) {
       // Si hay datos existentes y no debemos regenerar, usar los datos existentes (NO generar con IA)
       if (datosExistentesUnidad && !debeGenerar) {
         console.log(`📦 [DEBUG] ===== USANDO DATOS EXISTENTES PARA UNIDAD ${i} (SIN GENERAR CON IA) =====`)
-        situacionSignificativa = datosExistentesUnidad.situacionSignificativa || ''
-        tituloUnidad = datosExistentesUnidad.tituloUnidad || unidad.tituloUnidad || ''
+        situacionSignificativa =
+          (!generarSituacionConIA && unidad.situacionSignificativa
+            ? String(unidad.situacionSignificativa)
+            : datosExistentesUnidad.situacionSignificativa) ||
+          situacionSignificativa ||
+          ''
+        tituloUnidad =
+          (!generarTituloConIA && unidad.tituloUnidad
+            ? unidad.tituloUnidad
+            : datosExistentesUnidad.tituloUnidad) ||
+          unidad.tituloUnidad ||
+          ''
         problemaPotencialidad = unidad.problemaPotencialidad || ''
-        campoTematico = '' // Campo temático ya no se usa
+        const camposExistentes = Array.isArray(unidad.camposTematicos)
+          ? unidad.camposTematicos
+          : []
+        campoTematico =
+          camposExistentes.length > 0
+            ? camposExistentes
+                .map((t: string) => String(t).trim())
+                .filter(Boolean)
+                .map((t: string) => `- ${t}`)
+                .join('\n')
+            : String(unidad.campoTematico || datosExistentesUnidad.campoTematico || '').trim()
         console.log(`✅ [DEBUG] Datos existentes cargados para unidad ${i}:`, {
           tieneSituacion: !!situacionSignificativa,
           longitudSituacion: situacionSignificativa.length,
@@ -341,15 +471,17 @@ export async function POST(request: NextRequest) {
       // Solo generar situación significativa si hay datos en "Problema o potencialidad"
       // Si está vacío, no se envía nada al prompt
       const tieneProblemaPotencialidad = unidad.problemaPotencialidad && unidad.problemaPotencialidad.trim().length > 0
+      const necesitaIA = generarSituacionConIA || generarTituloConIA
       
-        if (tieneProblemaPotencialidad && debeGenerar) {
+        if (tieneProblemaPotencialidad && debeGenerar && necesitaIA) {
         try {
           console.log(`🤖 [DEBUG] ===== GENERANDO SITUACIÓN SIGNIFICATIVA PARA UNIDAD ${i} =====`)
           console.log(`   - Problema/Potencialidad: "${unidad.problemaPotencialidad.substring(0, 50)}..."`)
           console.log(`   - Producto: "${unidad.producto}"`)
-          console.log(`   - tieneTituloIA: ${unidad.tieneTituloIA}`)
+          console.log(`   - tieneTituloIA: ${generarTituloConIA}`)
+          console.log(`   - tieneSituacionIA: ${generarSituacionConIA}`)
           console.log(`   - tituloUnidad recibido: "${unidad.tituloUnidad || '(vacío)'}"`)
-          console.log(`   - tituloUnidad que se enviará a IA: "${unidad.tieneTituloIA ? '(vacío - IA lo generará)' : (unidad.tituloUnidad || '(vacío)')}"`)
+          console.log(`   - tituloUnidad que se enviará a IA: "${generarTituloConIA ? '(vacío - IA lo generará)' : (unidad.tituloUnidad || '(vacío)')}"`)
           
           const situacionResult = await generateSituacionSignificativa(
             {
@@ -357,17 +489,32 @@ export async function POST(request: NextRequest) {
               producto: unidad.producto,
               // Si tieneTituloIA es true, pasar título vacío para que la IA lo genere
               // Si es false, pasar el título que el usuario ingresó
-              tituloUnidad: unidad.tieneTituloIA ? '' : (unidad.tituloUnidad || '')
+              tituloUnidad: generarTituloConIA ? '' : (unidad.tituloUnidad || ''),
+              camposTematicos: Array.isArray(unidad.camposTematicos) ? unidad.camposTematicos : [],
+              campotematico: String(unidad.campoTematico || '').trim()
             },
             formData,
             aiProvider,
             openaiModel
           )
           
-          situacionSignificativa = situacionResult.situacionSignificativa || ''
+          if (generarSituacionConIA) {
+            situacionSignificativa = situacionResult.situacionSignificativa || ''
+          } else {
+            situacionSignificativa = String(unidad.situacionSignificativa || situacionSignificativa || '')
+          }
+          
+          if (situacionResult.respuestaCompleta?.trim()) {
+            respuestasIAPorUnidad.push({
+              unidad: i,
+              respuestaCompleta: situacionResult.respuestaCompleta,
+              tituloExtraido: situacionResult.titulo || undefined,
+              situacionParseada: situacionSignificativa || undefined
+            })
+          }
           
           // Solo usar el título generado por IA si tieneTituloIA es true
-          if (unidad.tieneTituloIA) {
+          if (generarTituloConIA) {
             tituloUnidad = situacionResult.titulo || unidad.tituloUnidad || ''
             console.log(`✅ [DEBUG] Título generado por IA para unidad ${i}: "${tituloUnidad}"`)
           } else {
@@ -387,14 +534,20 @@ export async function POST(request: NextRequest) {
             error: error.message,
             stack: error.stack
           })
-          // Continuar sin situación significativa generada
-          situacionSignificativa = ''
+          // Continuar sin situación significativa generada (si era manual, mantenerla)
+          if (generarSituacionConIA) {
+            situacionSignificativa = ''
+          }
         }
       } else {
-          console.log(`⏭️ [DEBUG] Unidad ${i}: No se enviará al prompt (problema/potencialidad está vacío o no debe generarse)`)
-        // No generar nada, dejar valores vacíos
-        situacionSignificativa = ''
-        if (unidad.tieneTituloIA) {
+          console.log(`⏭️ [DEBUG] Unidad ${i}: No se enviará al prompt (vacío, no debe generarse, o ambos campos son manuales)`)
+        // Mantener valores manuales si aplican
+        if (generarSituacionConIA) {
+          situacionSignificativa = ''
+        } else {
+          situacionSignificativa = String(unidad.situacionSignificativa || situacionSignificativa || '')
+        }
+        if (generarTituloConIA) {
           tituloUnidad = '' // Si la IA debía generar el título pero no hay datos, dejar vacío
         } else {
           tituloUnidad = unidad.tituloUnidad || '' // Si el usuario ingresó un título manual, mantenerlo
@@ -405,6 +558,11 @@ export async function POST(request: NextRequest) {
       // Si no hay título aún, usar el de la unidad si existe
       if (!tituloUnidad && unidad.tituloUnidad) {
         tituloUnidad = unidad.tituloUnidad
+      }
+
+      // Si no hay situación aún y era manual, usar la de la unidad
+      if (!situacionSignificativa && !generarSituacionConIA && unidad.situacionSignificativa) {
+        situacionSignificativa = String(unidad.situacionSignificativa)
       }
       
       // Obtener competencias desde la BD (múltiples)
@@ -453,10 +611,21 @@ export async function POST(request: NextRequest) {
         console.warn(`⚠️ [DEBUG] No hay IDs de competencias para unidad ${i}`)
       }
       
-      // Campo temático ya no se genera - mantener vacío
-      // Los desempeños ya no se usan para generar campo temático
-      campoTematico = ''
-      console.log(`⏭️ [DEBUG] Unidad ${i}: Campo temático deshabilitado (ya no se usa en la plantilla)`)
+      // Campo temático ingresado por el usuario en el plan anual
+      const camposDesdeUnidad = Array.isArray(unidad.camposTematicos)
+        ? unidad.camposTematicos
+        : []
+      campoTematico =
+        camposDesdeUnidad.length > 0
+          ? camposDesdeUnidad
+              .map((t: string) => String(t).trim())
+              .filter(Boolean)
+              .map((t: string) => `- ${t}`)
+              .join('\n')
+          : String(unidad.campoTematico || '').trim()
+      console.log(
+        `📝 [DEBUG] Unidad ${i}: Campo temático desde formulario (${camposDesdeUnidad.length} ítems)`
+      )
       
       // Asignar datos a las variables de la plantilla
       // Asegurarse de que los valores sean strings y no undefined/null
@@ -475,6 +644,7 @@ export async function POST(request: NextRequest) {
       data[`titulosituacionsignificativa${i}`] = String(tituloFinal).trim()
       data[`situacionsignificativa${i}`] = String(situacionFinal).trim()
       data[`problemapotencialidad${i}`] = String(problemaPotencialidad || '').trim()
+      // Columna CAMPO TEMATICO de la plantilla: {{campotematico0}}, {{campotematico1}}, ...
       data[`campotematico${i}`] = String(campoTematicoFinal).trim()
       data[`competencias${i}`] = String(competenciasTexto || '').trim()
       data[`producto${i}`] = String(unidad.producto || '').trim()
@@ -492,6 +662,7 @@ export async function POST(request: NextRequest) {
         ...unidad,
         situacionSignificativa: situacionSignificativa || '',
         campoTematico: campoTematico || '',
+        camposTematicos: Array.isArray(unidad.camposTematicos) ? unidad.camposTematicos : [],
         tituloUnidad: tituloUnidad || ''
       }
       
@@ -553,8 +724,7 @@ export async function POST(request: NextRequest) {
     // construimos el JSON y guardamos en la BD
     if (!soloExportar && (planAnualId || modoGeneracion)) {
       try {
-        const userId = await getUserId(request)
-        if (userId) {
+          if (userId) {
           const anio = new Date().getFullYear()
 
           let planExistente = null as Awaited<ReturnType<typeof prisma.planAnual.findFirst>>
@@ -609,9 +779,16 @@ export async function POST(request: NextRequest) {
                 capacidadSeleccionada: unidadConDatos?.capacidadSeleccionada || '',
                 conocimientos: unidadConDatos?.conocimientos || '',
                 tieneTituloIA: unidadConDatos?.tieneTituloIA !== undefined ? unidadConDatos.tieneTituloIA : true,
-                // Campos generados por IA - ESTOS DEBEN ESTAR PRESENTES SIEMPRE
+                tieneSituacionIA:
+                  unidadConDatos?.tieneSituacionIA !== undefined
+                    ? unidadConDatos.tieneSituacionIA
+                    : true,
+                // Campos generados por IA o ingresados manualmente
                 situacionSignificativa: unidadConDatos?.situacionSignificativa || '',
                 campoTematico: unidadConDatos?.campoTematico || '',
+                camposTematicos: Array.isArray(unidadConDatos?.camposTematicos)
+                  ? unidadConDatos.camposTematicos
+                  : [],
                 tituloUnidad: unidadConDatos?.tituloUnidad || ''
               }
               
@@ -659,6 +836,10 @@ export async function POST(request: NextRequest) {
               data: dataParaGuardar
             })
           } else if (formData) {
+            const limitePlan = await assertPuedeCrearPlanAnual(userId)
+            if (!limitePlan.ok) {
+              throw new Error(limitePlan.error)
+            }
             console.log('💾 [DEBUG] Creando plan anual nuevo al generar documento')
             await prisma.planAnual.create({
               data: {
@@ -810,18 +991,62 @@ export async function POST(request: NextRequest) {
     })
 
     // Generar nombre del archivo
-    const fileName = `PLANIFICACION_ANUAL_${formData.area || 'documento'}_${formData.grado || ''}_${Date.now()}.docx`
+    let fileName = `PLANIFICACION_ANUAL_${formData.area || 'documento'}_${formData.grado || ''}_${Date.now()}.docx`
       .replace(/\s+/g, '_')
       .replace(/[^a-zA-Z0-9_]/g, '')
-    
+
+    let entrega
+    try {
+      if (!tieneSuscripcion) {
+        console.log('🔒 [DEBUG] Modo prueba: convirtiendo plan anual a PDF protegido...')
+      }
+      entrega = await prepararEntregaDocumento(buf as Buffer, fileName, !tieneSuscripcion)
+    } catch (pdfError) {
+      console.error('Error al generar PDF protegido (modo prueba):', pdfError)
+      return NextResponse.json(
+        { error: MSG_PDF_TRIAL_NO_DISPONIBLE, code: CODE_PDF_TRIAL_NO_DISPONIBLE },
+        { status: 503 }
+      )
+    }
+
     console.log('✅ [DEBUG] Buffer generado, devolviendo documento...')
 
     // Devolver el archivo como respuesta
-    return new NextResponse(buf as any, {
+    if (consumirTrialPlan && !soloExportar) {
+      await marcarTrialConsumido(userId, 'plan')
+    }
+    if (suscripcionRegenId != null) {
+      await consumirCreditoRegeneracion(suscripcionRegenId)
+    }
+
+    if (respuestasIAPorUnidad.length > 0) {
+      const iaBuf = await generarDocxRespuestasIAPlanAnual(respuestasIAPorUnidad, {
+        area: formData?.area,
+        grado: formData?.grado
+      })
+      const baseName = entrega.fileName.replace(/\.(docx|pdf)$/i, '')
+      const iaFileName = `${baseName}_RESPUESTA_IA.docx`
+      const zip = new JSZip()
+      zip.file(entrega.fileName, entrega.buffer)
+      zip.file(iaFileName, iaBuf)
+      const zipBuf = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' })
+      const zipName = `${baseName}_con_respuesta_IA.zip`
+
+      return new NextResponse(zipBuf as any, {
+        headers: {
+          'Content-Type': 'application/zip',
+          'Content-Disposition': `attachment; filename="${zipName}"`,
+          'X-Documento-Incluye-Respuesta-IA': '1'
+        }
+      })
+    }
+
+    return new NextResponse(entrega.buffer as any, {
       headers: {
-        'Content-Type': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-        'Content-Disposition': `attachment; filename="${fileName}"`,
-      },
+        'Content-Type': entrega.contentType,
+        'Content-Disposition': `attachment; filename="${entrega.fileName}"`,
+        ...entrega.extraHeaders
+      }
     })
   } catch (error: any) {
     console.error('Error al generar el documento:', error)

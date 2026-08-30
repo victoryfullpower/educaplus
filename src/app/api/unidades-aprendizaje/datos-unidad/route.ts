@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getUserId } from '@/lib/auth'
+import { textoCampoTematicoDesdeUnidadPlan } from '@/lib/campo-tematico-unidad'
 
 export async function GET(request: NextRequest) {
   try {
@@ -40,7 +41,8 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({
         situacionSignificativa: null,
         producto: null,
-        tituloUnidad: null
+        tituloUnidad: null,
+        campoTematico: null
       })
     }
 
@@ -70,14 +72,18 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({
         situacionSignificativa: null,
         producto: null,
-        tituloUnidad: null
+        tituloUnidad: null,
+        campoTematico: null
       })
     }
+
+    const campoTematico = textoCampoTematicoDesdeUnidadPlan(unidadData) || null
 
     return NextResponse.json({
       situacionSignificativa: unidadData.situacionSignificativa || null,
       producto: unidadData.producto || null,
-      tituloUnidad: unidadData.tituloUnidad || null
+      tituloUnidad: unidadData.tituloUnidad || null,
+      campoTematico
     })
   } catch (error) {
     console.error('Error al obtener datos de unidad:', error)
@@ -87,4 +93,3 @@ export async function GET(request: NextRequest) {
     )
   }
 }
-

@@ -64,6 +64,7 @@ function FichaAprendizajeContent() {
   const [loading, setLoading] = useState(false)
   const [loadingPrompt, setLoadingPrompt] = useState(false)
   const [loadingRespuestaPrompt, setLoadingRespuestaPrompt] = useState(false)
+  const [loadingComparar, setLoadingComparar] = useState(false)
   const [showModalGeneracion, setShowModalGeneracion] = useState(false)
   const [contenidoGuardado, setContenidoGuardado] = useState<{
     motivacion: string
@@ -271,23 +272,41 @@ function FichaAprendizajeContent() {
       const response = await fetch('/api/sesiones-fichas/generate-document-ficha', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sesionId: sesionSeleccionada.id })
+        body: JSON.stringify({ sesionId: sesionSeleccionada.id, formato: 'json' })
       })
       if (!response.ok) {
         const err = await response.json()
         throw new Error(err.error || 'Error al generar el documento')
       }
-      const fromSaved = response.headers.get('X-Ficha-From') === 'saved'
-      const blob = await response.blob()
-      const url = window.URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `Ficha_Aprendizaje_${unidadConSesiones.area ?? 'documento'}_${Date.now()}.docx`
-      document.body.appendChild(a)
-      a.click()
-      document.body.removeChild(a)
-      window.URL.revokeObjectURL(url)
-      if (fromSaved) {
+      const data = await response.json()
+      const descargarBase64 = (docxBase64: string, fileName: string) => {
+        const bytes = Uint8Array.from(atob(docxBase64), (c) => c.charCodeAt(0))
+        const blob = new Blob([bytes], {
+          type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        })
+        const url = window.URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = fileName
+        document.body.appendChild(a)
+        a.click()
+        document.body.removeChild(a)
+        window.URL.revokeObjectURL(url)
+      }
+      if (data.prompt?.docxBase64) {
+        descargarBase64(data.prompt.docxBase64, data.prompt.fileName)
+      }
+      if (data.documento?.docxBase64) {
+        descargarBase64(
+          data.documento.docxBase64,
+          data.documento.fileName ||
+            `Ficha_Aprendizaje_${unidadConSesiones.area ?? 'documento'}_${Date.now()}.docx`
+        )
+      }
+      if (data.respuesta?.docxBase64) {
+        descargarBase64(data.respuesta.docxBase64, data.respuesta.fileName)
+      }
+      if (data.from === 'saved') {
         console.info('Documento generado desde datos guardados (sin consultar IA).')
       }
     } catch (e) {
@@ -420,6 +439,49 @@ function FichaAprendizajeContent() {
     }
   }
 
+  const descargarRespuestasTresPrompts = async () => {
+    if (!sesionSeleccionada) return
+    const response = await fetch('/api/sesiones-fichas/comparar-prompts-ficha', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sesionId: sesionSeleccionada.id })
+    })
+    if (!response.ok) {
+      const err = await response.json()
+      throw new Error(err.error || 'Error al generar la comparación de prompts')
+    }
+    const data = await response.json()
+    const resultados = Array.isArray(data.resultados) ? data.resultados : []
+    for (const r of resultados) {
+      const buf = Uint8Array.from(atob(r.docxBase64), (c) => c.charCodeAt(0))
+      const blob = new Blob([buf], {
+        type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+      })
+      const url = window.URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = r.fileNameDocx || `FICHA_GPT_OPCION_${r.opcion}_${Date.now()}.docx`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      window.URL.revokeObjectURL(url)
+      await new Promise((resolve) => setTimeout(resolve, 300))
+    }
+  }
+
+  const handleCompararPrompts = async () => {
+    if (!sesionSeleccionada) return
+    setLoadingComparar(true)
+    try {
+      await descargarRespuestasTresPrompts()
+    } catch (e) {
+      console.error(e)
+      alert(e instanceof Error ? e.message : 'Error al generar la comparación de prompts.')
+    } finally {
+      setLoadingComparar(false)
+    }
+  }
+
   const handleGenerarDocumento = async () => {
     if (!unidadConSesiones || !sesionSeleccionada) return
     try {
@@ -454,7 +516,7 @@ function FichaAprendizajeContent() {
             Elige una programación anual, luego la unidad y la sesión para generar la ficha.
           </p>
 
-          <div className={`${styles.form} ${(loading || loadingPrompt || loadingRespuestaPrompt) ? styles.loading : ''}`}>
+          <div className={`${styles.form} ${(loading || loadingPrompt || loadingRespuestaPrompt || loadingComparar) ? styles.loading : ''}`}>
             <h2 className={styles.phaseTitle}>Fase 1: Selección</h2>
             <p className={styles.phaseDescription}>
               {bloqueado
@@ -539,6 +601,14 @@ function FichaAprendizajeContent() {
                     onClick={handleRespuestaPrompt}
                   >
                     {loadingRespuestaPrompt ? 'Generando…' : 'Respuesta prompt'}
+                  </button>
+                  <button
+                    type="button"
+                    className={styles.buttonSecondary}
+                    disabled={!puedeGenerar || loadingComparar}
+                    onClick={handleCompararPrompts}
+                  >
+                    {loadingComparar ? 'Generando 3 Word…' : 'Comparar 3 prompts (3 Word)'}
                   </button>
                 </>
               )}

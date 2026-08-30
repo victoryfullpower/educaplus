@@ -6,6 +6,8 @@ import PizZip from 'pizzip'
 import { getUserId } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { datosListaCotejoDesdeSesion } from '@/lib/lista-cotejo-sesion'
+import { tieneSuscripcionActivaPara } from '@/lib/acceso-usuario'
+import { MSG_TRIAL_FICHA_COTEJO_REQUIERE_PLAN } from '@/lib/acceso-trial'
 
 export const dynamic = 'force-dynamic'
 
@@ -36,6 +38,22 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         { error: 'Sesión no encontrada o sin permisos' },
         { status: 404 }
+      )
+    }
+
+    const uAcceso = sesion.unidadAprendizaje
+    const tieneSuscripcion = await tieneSuscripcionActivaPara(
+      userId,
+      uAcceso.areaId,
+      uAcceso.gradoId
+    )
+    if (!tieneSuscripcion) {
+      return NextResponse.json(
+        {
+          error: MSG_TRIAL_FICHA_COTEJO_REQUIERE_PLAN,
+          code: 'TRIAL_FICHA_COTEJO_PLAN'
+        },
+        { status: 403 }
       )
     }
 

@@ -213,6 +213,22 @@ export default function PanelLayout({
                   📅 Planes Anuales
                 </Link>
               </li>
+              <li>
+                <Link
+                  href="/paneladministracion/sugerencias-problema-plan"
+                  className={`${styles.navLink} ${pathname === '/paneladministracion/sugerencias-problema-plan' ? styles.navLinkActive : ''}`}
+                >
+                  💡 Sugerencias problema / campo
+                </Link>
+              </li>
+              <li>
+                <Link
+                  href="/paneladministracion/sugerencias-producto-plan"
+                  className={`${styles.navLink} ${pathname === '/paneladministracion/sugerencias-producto-plan' ? styles.navLinkActive : ''}`}
+                >
+                  📦 Sugerencias producto
+                </Link>
+              </li>
             </ul>
           </div>
         </nav>

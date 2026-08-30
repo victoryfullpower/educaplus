@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getUserId } from '@/lib/auth'
+import { assertPuedeCrearUnidad } from '@/lib/limites-plan-anual'
 
 export async function POST(request: NextRequest) {
   try {
@@ -138,7 +139,13 @@ export async function POST(request: NextRequest) {
       })
       mensaje = 'Unidad de aprendizaje actualizada exitosamente'
     } else {
-      // Crear nueva unidad
+      const limite = await assertPuedeCrearUnidad(userId)
+      if (!limite.ok) {
+        return NextResponse.json(
+          { error: limite.error, code: limite.code },
+          { status: 403 }
+        )
+      }
       unidadAprendizaje = await prisma.unidadAprendizaje.create({
         data: datosUnidad
       })

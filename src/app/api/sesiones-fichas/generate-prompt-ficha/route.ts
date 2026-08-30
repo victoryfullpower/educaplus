@@ -5,6 +5,10 @@ import Docxtemplater from 'docxtemplater'
 import PizZip from 'pizzip'
 import { getUserId } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
+import {
+  formatearProcesosDidacticosPrompt,
+  listarDescripcionesProcesosDidacticos
+} from '@/lib/procesos-didacticos-sesion'
 
 export const dynamic = 'force-dynamic'
 
@@ -69,28 +73,32 @@ export async function POST(request: NextRequest) {
     const grado = (sesion.grado ?? u.grado ?? '').trim()
     const duracionRaw = (sesion.duracion ?? u.duracion ?? '').trim()
     const duracion = duracionRaw ? `${duracionRaw} minutos` : ''
+    const desarrollodurante = (sesion.desarrollodurante ?? '').trim()
+    const desarrolloLegacy = (sesion.desarrollo ?? '').trim()
+    const desarrollo_sesion = desarrollodurante || desarrolloLegacy
 
-    const desarrolloRaw = (sesion.desarrollo ?? '').trim()
-    const desarrolloSinLlaves = desarrolloRaw
-      ? desarrolloRaw.split('\n').map((linea) => {
-          const t = linea.trim()
-          if (/^\{.+?\}$/.test(t)) return t.replace(/^\{|\}$/g, '').trim()
-          return linea
-        }).join('\n')
-      : ''
+    let procesosdidacticos = ''
+    const areaId = sesion.areaId ?? u.areaId
+    procesosdidacticos = formatearProcesosDidacticosPrompt(
+      await listarDescripcionesProcesosDidacticos(areaId, competencia)
+    )
+
     const data = {
       area,
       grado,
       titulosesion: (sesion.titulo ?? '').trim(),
       proposito: sinPrefijoProposito(sesion.proposito ?? ''),
+      campotematico: limpiarBr(sesion.campoTematico ?? ''),
       competencia,
       capacidad,
+      procesosdidacticos,
       evidencia: limpiarBr(sesion.evidencias ?? ''),
       criterios: limpiarBr(sesion.criterios ?? ''),
       duracion,
-      desarrollo: desarrolloSinLlaves,
+      desarrollo_sesion,
+      desarrollo: desarrollo_sesion,
       desarrolloantes: (sesion.desarrolloantes ?? '').trim(),
-      desarrollodurante: (sesion.desarrollodurante ?? '').trim(),
+      desarrollodurante,
       desarrollodespues: (sesion.desarrollodespues ?? '').trim()
     }
 

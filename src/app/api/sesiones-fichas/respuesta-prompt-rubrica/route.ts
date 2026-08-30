@@ -11,7 +11,7 @@ import { Document, Packer, Paragraph, TextRun, AlignmentType, Table, TableRow, T
 
 export const dynamic = 'force-dynamic'
 
-const TEMPLATE_NAME = 'PROMPT_Rubrica.docx'
+const TEMPLATE_NAME = 'Prompt_Rubrica.docx'
 
 /** Modelo obligatorio para respuesta del prompt rúbrica */
 const MODELO_OBLIGATORIO = 'gpt-5-mini'

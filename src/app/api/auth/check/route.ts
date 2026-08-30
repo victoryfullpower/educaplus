@@ -14,13 +14,17 @@ export async function GET(request: NextRequest) {
     }
 
     // Obtener datos del usuario incluyendo el rol
-    const user = await prisma.user.findUnique({
+    const db = prisma as any
+    const user = await db.user.findUnique({
       where: { id: userId },
       select: {
         id: true,
         email: true,
         name: true,
-        rol: true
+        rol: true,
+        trialPlanUsado: true,
+        trialUnidadUsada: true,
+        trialSesionUsada: true
       }
     })
 
@@ -38,7 +42,12 @@ export async function GET(request: NextRequest) {
         id: user.id,
         email: user.email,
         name: user.name,
-        rol: user.rol
+        rol: user.rol,
+        trial: {
+          plan: user.trialPlanUsado ? 1 : 0,
+          unidad: user.trialUnidadUsada ? 1 : 0,
+          sesion: user.trialSesionUsada ? 1 : 0
+        }
       }
     })
   } catch (error) {

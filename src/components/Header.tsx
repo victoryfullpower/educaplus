@@ -1,50 +1,91 @@
 'use client'
 
 import Link from 'next/link'
-import Image from 'next/image'
-import { useState, useRef, useEffect } from 'react'
-import { useRouter } from 'next/navigation'
-import logo from '@/assets/log_educaplus.jpeg'
+import { usePathname, useRouter } from 'next/navigation'
+import { useEffect, useRef, useState } from 'react'
+import EducaPlusLogo from '@/components/EducaPlusLogo'
+import { NavIcon, type NavIconName } from '@/components/icons/NavIcons'
 import styles from './Header.module.css'
+
+const NAV_MAIN: {
+  href: string
+  hrefAuth?: string
+  label: string
+  icon: NavIconName
+}[] = [
+  { href: '/', hrefAuth: '/home', label: 'Inicio', icon: 'home' },
+  { href: '/nosotros', label: 'Nosotros', icon: 'users' },
+  { href: '/planes', label: 'Planes', icon: 'plans' }
+]
+
+const SERVICIOS_ITEMS: { href: string; label: string; icon: NavIconName }[] = [
+  { href: '/servicios/crear-material', label: 'Crear material con IA', icon: 'sparkles' },
+  { href: '/servicios/cursos', label: 'Cursos y capacitación', icon: 'graduation' }
+]
+
+function navHref(item: (typeof NAV_MAIN)[number], isAuthenticated: boolean): string {
+  const base = isAuthenticated && item.hrefAuth ? item.hrefAuth : item.href
+  if (base === '/' || base === '/home') {
+    return isAuthenticated ? '/home' : '/'
+  }
+  return base
+}
+
+function isNavActive(href: string, pathname: string) {
+  if (href === '/' || href === '/home') {
+    return pathname === '/' || pathname === '/home'
+  }
+  return pathname === href || pathname.startsWith(`${href}/`)
+}
 
 export default function Header() {
   const router = useRouter()
+  const pathname = usePathname()
   const [servicesOpen, setServicesOpen] = useState(false)
+  const [mobileOpen, setMobileOpen] = useState(false)
   const [isAuthenticated, setIsAuthenticated] = useState(false)
+  const [user, setUser] = useState<{ name?: string | null; email?: string | null } | null>(null)
   const [loading, setLoading] = useState(true)
-  const timeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const dropdownRef = useRef<HTMLDivElement>(null)
 
-  // Verificar si el usuario está autenticado (solo al montar el componente)
   useEffect(() => {
     const checkAuth = async () => {
       try {
         const response = await fetch('/api/auth/check')
         const data = await response.json()
         setIsAuthenticated(data.authenticated || false)
-      } catch (error) {
-        console.error('Error al verificar autenticación:', error)
+        setUser(data.authenticated ? data.user ?? null : null)
+      } catch {
         setIsAuthenticated(false)
+        setUser(null)
       } finally {
         setLoading(false)
       }
     }
-
     checkAuth()
-    
-    // No es necesario verificar periódicamente - el estado de autenticación solo cambia
-    // cuando el usuario hace login/logout, y en esos casos se recarga la página
     return () => {
-      if (timeoutRef.current) {
-        clearTimeout(timeoutRef.current)
-      }
+      if (timeoutRef.current) clearTimeout(timeoutRef.current)
     }
   }, [])
+
+  useEffect(() => {
+    setMobileOpen(false)
+    setServicesOpen(false)
+  }, [pathname])
+
+  useEffect(() => {
+    document.body.style.overflow = mobileOpen ? 'hidden' : ''
+    return () => {
+      document.body.style.overflow = ''
+    }
+  }, [mobileOpen])
 
   const handleLogout = async () => {
     try {
       await fetch('/api/auth/logout', { method: 'POST' })
       setIsAuthenticated(false)
+      setUser(null)
       router.push('/')
       router.refresh()
     } catch (error) {
@@ -52,95 +93,202 @@ export default function Header() {
     }
   }
 
-  const handleMouseEnter = () => {
-    if (timeoutRef.current) {
-      clearTimeout(timeoutRef.current)
-    }
+  const openServices = () => {
+    if (timeoutRef.current) clearTimeout(timeoutRef.current)
     setServicesOpen(true)
   }
 
-  const handleMouseLeave = () => {
-    // Pequeño delay antes de cerrar para permitir movimiento del cursor
-    timeoutRef.current = setTimeout(() => {
-      setServicesOpen(false)
-    }, 200)
+  const closeServices = () => {
+    timeoutRef.current = setTimeout(() => setServicesOpen(false), 180)
   }
 
-  const inicioHref = isAuthenticated ? '/home' : '/'
+  const serviciosActive =
+    pathname === '/servicios' || pathname.startsWith('/servicios/')
+
+  const linkClass = (active: boolean) =>
+    `${styles.navLink} ${active ? styles.navLinkActive : ''}`
+
+  const renderNavLinks = (mobile = false) => (
+    <>
+      {NAV_MAIN.map((item) => {
+        const href = navHref(item, isAuthenticated)
+        const active = isNavActive(href, pathname)
+        return (
+          <Link
+            key={item.label}
+            href={href}
+            className={linkClass(active)}
+            onClick={() => mobile && setMobileOpen(false)}
+          >
+            <span className={styles.navIcon}>
+              <NavIcon name={item.icon} />
+            </span>
+            <span>{item.label}</span>
+          </Link>
+        )
+      })}
+
+      <div
+        ref={mobile ? undefined : dropdownRef}
+        className={styles.dropdown}
+        onMouseEnter={mobile ? undefined : openServices}
+        onMouseLeave={mobile ? undefined : closeServices}
+      >
+        <Link
+          href="/servicios"
+          className={linkClass(serviciosActive)}
+          onClick={(e) => {
+            if (mobile) {
+              e.preventDefault()
+              setServicesOpen((o) => !o)
+            } else {
+              setMobileOpen(false)
+            }
+          }}
+          aria-expanded={servicesOpen}
+          aria-haspopup="true"
+        >
+          <span className={styles.navIcon}>
+            <NavIcon name="services" />
+          </span>
+          <span>Servicios</span>
+          <span
+            className={`${styles.chevron} ${servicesOpen ? styles.chevronOpen : ''}`}
+            aria-hidden
+          />
+        </Link>
+        <div
+          className={`${styles.dropdownMenu} ${servicesOpen ? styles.dropdownMenuOpen : ''}`}
+          onMouseEnter={mobile ? undefined : openServices}
+          onMouseLeave={mobile ? undefined : closeServices}
+        >
+          {SERVICIOS_ITEMS.map((item) => (
+            <Link
+              key={item.href}
+              href={item.href}
+              className={`${styles.dropdownItem} ${
+                pathname === item.href || pathname.startsWith(`${item.href}/`)
+                  ? styles.dropdownItemActive
+                  : ''
+              }`}
+              onClick={() => {
+                setMobileOpen(false)
+                setServicesOpen(false)
+              }}
+            >
+              <span className={styles.dropdownIcon}>
+                <NavIcon name={item.icon} size={16} />
+              </span>
+              <span>{item.label}</span>
+            </Link>
+          ))}
+        </div>
+      </div>
+
+      <Link
+        href="/servicios/cursos"
+        className={linkClass(
+          pathname === '/servicios/cursos' || pathname.startsWith('/servicios/cursos/')
+        )}
+        onClick={() => mobile && setMobileOpen(false)}
+      >
+        <span className={styles.navIcon}>
+          <NavIcon name="graduation" />
+        </span>
+        <span>Cursos</span>
+      </Link>
+
+      {!loading &&
+        (isAuthenticated ? (
+          <>
+            <div className={styles.userInfo} title={user?.email || undefined}>
+              <span className={styles.userAvatar} aria-hidden>
+                {(user?.name || user?.email || 'U').trim().charAt(0).toUpperCase()}
+              </span>
+              <span className={styles.userMeta}>
+                <span className={styles.userName}>{user?.name || 'Usuario'}</span>
+                {user?.email && <span className={styles.userEmail}>{user.email}</span>}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setMobileOpen(false)
+                handleLogout()
+              }}
+              className={styles.navLinkGhost}
+            >
+              <span className={styles.navIcon}>
+                <NavIcon name="logout" />
+              </span>
+              <span>Cerrar sesión</span>
+            </button>
+          </>
+        ) : (
+          <>
+            <Link
+              href="/login"
+              className={linkClass(pathname === '/login')}
+              onClick={() => mobile && setMobileOpen(false)}
+            >
+              <span className={styles.navIcon}>
+                <NavIcon name="login" />
+              </span>
+              <span>Iniciar sesión</span>
+            </Link>
+            <Link
+              href="/register"
+              className={styles.navButton}
+              onClick={() => mobile && setMobileOpen(false)}
+            >
+              <NavIcon name="userPlus" size={16} className={styles.navButtonIcon} />
+              Crear cuenta
+            </Link>
+          </>
+        ))}
+    </>
+  )
 
   return (
     <header className={styles.header}>
       <div className={styles.container}>
-        <div className={styles.left}>
-          <Link href={inicioHref} className={styles.logo}>
-            <Image 
-              src={logo} 
-              alt="EducaPlus Logo" 
-              className={styles.logoImage}
-              priority
-            />
-          </Link>
-        </div>
-        
-        <nav className={styles.nav}>
-          <Link href={inicioHref} className={styles.navLink}>INICIO</Link>
-          <Link href="/nosotros" className={styles.navLink}>NOSOTROS</Link>
-          <Link href="/planes" className={styles.navLink}>
-            PLANES
-          </Link>
+        <EducaPlusLogo
+          href={isAuthenticated ? '/home' : '/'}
+          linkClassName={styles.logo}
+          imageClassName={styles.logoImage}
+          priority
+          onLinkClick={() => setMobileOpen(false)}
+        />
 
-          <div 
-            ref={dropdownRef}
-            className={styles.dropdown}
-            onMouseEnter={handleMouseEnter}
-            onMouseLeave={handleMouseLeave}
-          >
-            <Link href="/servicios" className={styles.navLink}>
-              SERVICIOS <span className={styles.arrow}>▼</span>
-            </Link>
-            {servicesOpen && (
-              <div 
-                className={styles.dropdownMenu}
-                onMouseEnter={handleMouseEnter}
-                onMouseLeave={handleMouseLeave}
-              >
-                <Link href="/servicios/materiales-listos" className={styles.dropdownItem}>
-                  Ver materiales listos
-                </Link>
-                <Link href="/servicios/crear-material" className={styles.dropdownItem}>
-                  Crear tu material con IA
-                </Link>
-                <Link href="/servicios/cursos" className={styles.dropdownItem}>
-                  Cursos & Capacitación
-                </Link>
-              </div>
-            )}
-          </div>
-          
-          <Link href="/servicios/cursos" className={styles.navLink}>CURSOS</Link>
-          {!loading && (
-            <>
-              {isAuthenticated ? (
-                <>
-                  <button 
-                    onClick={handleLogout}
-                    className={styles.navLink}
-                    style={{ background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', fontSize: 'inherit' }}
-                  >
-                    CERRAR SESIÓN
-                  </button>
-                </>
-              ) : (
-                <>
-                  <Link href="/login" className={styles.navLink}>INICIAR SESIÓN</Link>
-                  <Link href="/register" className={styles.navButton}>CREAR CUENTA</Link>
-                </>
-              )}
-            </>
-          )}
+        <nav className={styles.navDesktop} aria-label="Principal">
+          {renderNavLinks()}
         </nav>
+
+        <button
+          type="button"
+          className={`${styles.menuToggle} ${mobileOpen ? styles.menuToggleOpen : ''}`}
+          aria-label={mobileOpen ? 'Cerrar menú' : 'Abrir menú'}
+          aria-expanded={mobileOpen}
+          onClick={() => setMobileOpen((o) => !o)}
+        >
+          <span />
+          <span />
+          <span />
+        </button>
       </div>
+
+      <div
+        className={`${styles.mobileBackdrop} ${mobileOpen ? styles.mobileBackdropOpen : ''}`}
+        aria-hidden={!mobileOpen}
+        onClick={() => setMobileOpen(false)}
+      />
+      <nav
+        className={`${styles.navMobile} ${mobileOpen ? styles.navMobileOpen : ''}`}
+        aria-label="Menú móvil"
+        aria-hidden={!mobileOpen}
+      >
+        {renderNavLinks(true)}
+      </nav>
     </header>
   )
 }
-

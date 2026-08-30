@@ -50,6 +50,9 @@ export async function GET(request: NextRequest) {
             },
             listaCotejo: {
               select: { id: true, titulosesion: true, createdAt: true }
+            },
+            solucionario: {
+              select: { id: true, titulosesion: true, createdAt: true }
             }
           }
         }
@@ -86,7 +89,7 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    const unidades = unidadesDb.map((u) => {
+    const unidadesRaw = unidadesDb.map((u) => {
       const sesionesGeneradas = u.listaSesiones
         .filter(sesionVisibleEnModal)
         .map((s) => ({
@@ -110,6 +113,16 @@ export async function GET(request: NextRequest) {
       }
     })
 
+    const unidades = [...unidadesRaw].sort((a, b) => {
+      const na = parseInt(String(a.unidad ?? ''), 10)
+      const nb = parseInt(String(b.unidad ?? ''), 10)
+      if (!Number.isNaN(na) && !Number.isNaN(nb)) return na - nb
+      return String(a.unidad ?? '').localeCompare(String(b.unidad ?? ''), 'es', {
+        numeric: true,
+        sensitivity: 'base'
+      })
+    })
+
     const sesiones: Array<{
       id: number
       numeroSesion: number
@@ -118,6 +131,10 @@ export async function GET(request: NextRequest) {
       unidadNumero: string | null
       tituloUnidad: string | null
       fechaHora: Date
+      tieneFicha: boolean
+      tieneSolucionario: boolean
+      tieneRubrica: boolean
+      tieneListaCotejo: boolean
     }> = []
 
     const fichas: Array<{
@@ -147,6 +164,15 @@ export async function GET(request: NextRequest) {
       fechaHora: Date
     }> = []
 
+    const solucionarios: Array<{
+      id: number
+      sesionId: number
+      numeroSesion: number
+      titulo: string | null
+      unidadNumero: string | null
+      fechaHora: Date
+    }> = []
+
     for (const u of unidadesDb) {
       for (const s of u.listaSesiones) {
         if (sesionVisibleEnModal(s)) {
@@ -157,7 +183,11 @@ export async function GET(request: NextRequest) {
             unidadAprendizajeId: u.id,
             unidadNumero: u.unidad,
             tituloUnidad: u.tituloUnidad,
-            fechaHora: s.updatedAt
+            fechaHora: s.updatedAt,
+            tieneFicha: !!s.fichaAprendizaje,
+            tieneSolucionario: !!s.solucionario,
+            tieneRubrica: !!s.rubrica,
+            tieneListaCotejo: !!s.listaCotejo
           })
         }
         if (s.fichaAprendizaje) {
@@ -193,6 +223,16 @@ export async function GET(request: NextRequest) {
             fechaHora: s.listaCotejo.createdAt
           })
         }
+        if (s.solucionario) {
+          solucionarios.push({
+            id: s.solucionario.id,
+            sesionId: s.id,
+            numeroSesion: s.numeroSesion,
+            titulo: s.solucionario.titulosesion || s.titulo,
+            unidadNumero: u.unidad,
+            fechaHora: s.solucionario.createdAt
+          })
+        }
       }
     }
 
@@ -208,7 +248,8 @@ export async function GET(request: NextRequest) {
       sesiones,
       fichas,
       rubricas,
-      listasCotejo
+      listasCotejo,
+      solucionarios
     })
   } catch (error) {
     console.error('Error al obtener documentos del plan:', error)

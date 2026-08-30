@@ -5,6 +5,10 @@ import type { NextConfig } from 'next'
 const nextConfig: NextConfig = {
   // No usar 'output: export' en desarrollo para permitir rutas API dinámicas
   // output: 'export', // Solo para builds estáticos
+  serverExternalPackages: ['pdfjs-dist', 'pdf-to-img', 'html-to-docx'],
+  experimental: {
+    proxyClientMaxBodySize: '50mb'
+  },
   trailingSlash: true,
   images: {
     unoptimized: true

@@ -7,11 +7,131 @@ import { Prisma } from '../../../../generated/prisma/client'
 import { prisma } from '@/lib/prisma'
 import { getUserId } from '@/lib/auth'
 import mammoth from 'mammoth'
+import {
+  marcarTrialConsumido,
+  MSG_TRIAL_AGOTADO,
+  puedeGenerarConTrial,
+  tieneSuscripcionActivaPara,
+  validarRegeneracionIA,
+  consumirCreditoRegeneracion
+} from '@/lib/acceso-usuario'
+import { MSG_TRIAL_SOLO_UNIDAD_1, unidadPermitidaEnTrial } from '@/lib/acceso-trial'
+import { unidadAprendizajeTieneContenidoGuardado } from '@/lib/acceso-cliente'
+import { assertPuedeCrearUnidad } from '@/lib/limites-plan-anual'
+import {
+  esFilaEncabezadoTablaDidactica,
+  filtrarSesionesTablaValidas,
+  resolverNumeroSesionesForm,
+} from '@/lib/unidad-sesiones-por-area'
+import {
+  nombreAreaDesdeForm,
+  resolverPromptUnidadPorArea
+} from '@/lib/prompt-unidad-por-area'
+import { textoCampoTematicoDesdeUnidadPlan } from '@/lib/campo-tematico-unidad'
+import {
+  CODE_PDF_TRIAL_NO_DISPONIBLE,
+  MSG_PDF_TRIAL_NO_DISPONIBLE,
+  prepararEntregaDocumento
+} from '@/lib/entrega-documento-trial'
+import { construirWordDesdeRespuestaGpt } from '@/lib/respuesta-prompt-word'
+import {
+  generarCompetenciasBdTexto,
+  generarMatrizTexto
+} from '@/lib/matriz-unidad-prompt'
+
+function agregarTextoRespuestaIa(actual: string | null, nuevo: string): string {
+  const t = nuevo.trim()
+  if (!t) return actual ?? ''
+  if (!actual?.trim()) return t
+  return `${actual.trim()}\n\n--- RESPUESTA IA (continuación) ---\n\n${t}`
+}
+
+/** Quita tags <br> y deja texto usable (multilínea). */
+function limpiarBrCelda(s: string): string {
+  return (s || '')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/\r\n/g, '\n')
+    .trim()
+}
+
+/** Título de sesión: sin <br>, sin prefijo "Sesión N:", una sola línea. */
+function limpiarTituloSesion(s: string): string {
+  let t = limpiarBrCelda(s).replace(/\n+/g, ' ').replace(/\s+/g, ' ').trim()
+  t = t.replace(/^sesi[oó]n\s*\d+\s*:?\s*/i, '').trim()
+  return t
+}
+
+/** Título de unidad para la plantilla Word (banner verde). */
+function tituloUnidadParaDocumento(s: string): string {
+  return String(s ?? '').trim().toLocaleUpperCase('es-PE')
+}
+
+/** Extrae fuente/tamaño del párrafo donde está {{competencia}} (sin negrita). */
+function extraerRPrContenidoDesdePlaceholder(
+  documentXml: string,
+  marcadores: string[]
+): string {
+  let idx = -1
+  let marcadorUsado = ''
+  for (const marcador of marcadores) {
+    idx = documentXml.indexOf(marcador)
+    if (idx > -1) {
+      marcadorUsado = marcador
+      break
+    }
+  }
+  if (idx === -1) return ''
+
+  let paraStart = -1
+  for (let i = idx; i >= 0; i--) {
+    if (documentXml.substring(i, i + 4) === '<w:p') {
+      const charAfter = documentXml.charAt(i + 4)
+      if (charAfter === ' ' || charAfter === '>') {
+        paraStart = i
+        break
+      }
+    }
+  }
+  const paraEnd = documentXml.indexOf('</w:p>', idx)
+  if (paraStart === -1 || paraEnd === -1) return ''
+
+  const parrafo = documentXml.substring(paraStart, paraEnd + 6)
+  const limpiarRPr = (inner: string) =>
+    inner.replace(/<w:b\s*\/>/g, '').replace(/<w:bCs\s*\/>/g, '').trim()
+
+  const runStart = parrafo.lastIndexOf('<w:r', parrafo.indexOf(marcadorUsado))
+  if (runStart > -1) {
+    const rPrMatch = parrafo.substring(runStart).match(/<w:rPr>([\s\S]*?)<\/w:rPr>/)
+    if (rPrMatch?.[1]) return limpiarRPr(rPrMatch[1])
+  }
+
+  const pPrMatch = parrafo.match(/<w:pPr>[\s\S]*?<w:rPr>([\s\S]*?)<\/w:rPr>/)
+  if (pPrMatch?.[1]) return limpiarRPr(pPrMatch[1])
+
+  return ''
+}
+
+function construirRPrContenidoXml(documentXml: string, marcadores: string[]): string {
+  const rPrContenidoPlaceholder = extraerRPrContenidoDesdePlaceholder(documentXml, marcadores)
+  return rPrContenidoPlaceholder
+    ? `<w:rPr>${rPrContenidoPlaceholder}</w:rPr>`
+    : '<w:rPr><w:rFonts w:ascii="Arial Nova Cond" w:hAnsi="Arial Nova Cond"/><w:sz w:val="20"/><w:szCs w:val="20"/></w:rPr>'
+}
+
+const MODELO_GPT = 'gpt-5-mini'
+/** Timeout por llamada a OpenAI (gpt-5-mini es más lento que 4o-mini). */
+const OPENAI_TIMEOUT_MS = 300_000
 
 export const dynamic = 'force-dynamic'
+export const maxDuration = 300
 
 export async function POST(request: NextRequest) {
   try {
+    const userId = await getUserId(request)
+    if (!userId) {
+      return NextResponse.json({ error: 'No autenticado' }, { status: 401 })
+    }
+
     const requestBody = await request.json()
     const { formData } = requestBody
 
@@ -20,6 +140,99 @@ export async function POST(request: NextRequest) {
         { error: 'Datos del formulario son requeridos' },
         { status: 400 }
       )
+    }
+
+    const incluirArchivosJson = formData.incluirArchivosJson === true
+    let respuestaIaEnfoquesTexto: string | null = null
+    let respuestaIaTablaTexto: string | null = null
+
+    const areaIdAcceso =
+      formData.areaId || (typeof formData.area === 'string' ? formData.area.split('|')[0] : formData.area)
+    const gradoIdAcceso =
+      formData.gradoId || (typeof formData.grado === 'string' ? formData.grado.split('|')[0] : formData.grado)
+    const tieneSuscripcion = await tieneSuscripcionActivaPara(
+      userId,
+      areaIdAcceso != null ? String(areaIdAcceso) : null,
+      gradoIdAcceso != null ? String(gradoIdAcceso) : null
+    )
+    const consumirTrialUnidad = !tieneSuscripcion
+
+    const forzarRegeneracionEarly =
+      formData.forzarRegeneracion === true || formData.regenerar === true
+    const unidadEarly = formData.unidad
+    const areaIdEarly =
+      formData.areaId ||
+      (formData.area && typeof formData.area === 'string' ? formData.area.split('|')[0] : formData.area)
+    const gradoIdEarly =
+      formData.gradoId ||
+      (formData.grado && typeof formData.grado === 'string' ? formData.grado.split('|')[0] : formData.grado)
+    const anioEarly = formData.anio || new Date().getFullYear()
+
+    let soloExportarUnidad = false
+    let unidadExistenteEarly: Awaited<
+      ReturnType<typeof prisma.unidadAprendizaje.findFirst>
+    > = null
+    if (!forzarRegeneracionEarly && unidadEarly && areaIdEarly && gradoIdEarly) {
+      unidadExistenteEarly = await prisma.unidadAprendizaje.findFirst({
+        where: {
+          idusuario: userId,
+          anio: parseInt(String(anioEarly)),
+          areaId: String(areaIdEarly),
+          gradoId: String(gradoIdEarly),
+          unidad: String(unidadEarly)
+        }
+      })
+      soloExportarUnidad = !!(
+        unidadExistenteEarly &&
+        unidadAprendizajeTieneContenidoGuardado(unidadExistenteEarly)
+      )
+    }
+
+    if (!soloExportarUnidad && !forzarRegeneracionEarly) {
+      const esNuevaUnidad =
+        !unidadExistenteEarly ||
+        !unidadAprendizajeTieneContenidoGuardado(unidadExistenteEarly)
+      if (esNuevaUnidad) {
+        const limite = await assertPuedeCrearUnidad(userId)
+        if (!limite.ok) {
+          return NextResponse.json(
+            { error: limite.error, code: limite.code },
+            { status: 403 }
+          )
+        }
+      }
+    }
+
+    let suscripcionRegenId: number | null = null
+    const esRegeneracionIA = forzarRegeneracionEarly && !soloExportarUnidad
+    if (esRegeneracionIA) {
+      const regen = await validarRegeneracionIA(
+        userId,
+        areaIdEarly != null ? String(areaIdEarly) : null,
+        gradoIdEarly != null ? String(gradoIdEarly) : null
+      )
+      if (!regen.ok) {
+        return NextResponse.json({ error: regen.error, code: regen.code }, { status: 403 })
+      }
+      suscripcionRegenId = regen.suscripcionId
+    }
+
+    if (consumirTrialUnidad) {
+      if (!unidadPermitidaEnTrial(unidadEarly)) {
+        return NextResponse.json(
+          { error: MSG_TRIAL_SOLO_UNIDAD_1, code: 'TRIAL_UNA_UNIDAD_PLAN' },
+          { status: 403 }
+        )
+      }
+      if (!soloExportarUnidad) {
+        const puedeTrial = await puedeGenerarConTrial(userId, 'unidad')
+        if (!puedeTrial) {
+          return NextResponse.json(
+            { error: MSG_TRIAL_AGOTADO, code: 'TRIAL_AGOTADO_UNIDAD' },
+            { status: 403 }
+          )
+        }
+      }
     }
 
     // Validar que el grado esté presente
@@ -69,6 +282,7 @@ export async function POST(request: NextRequest) {
     let competenciaNumero = ''
     let estandaresTexto = ''
     let tituloUnidad = ''
+    let campoTematicoUnidad = ''
     const competenciasArray: Array<{ competencianro: string; competenciadescripcion: string; estandares: string }> = []
     
     // Array para el prompt: lista de competencias con número de capacidades
@@ -87,14 +301,6 @@ export async function POST(request: NextRequest) {
     }> | null = null
     
     try {
-      const userId = await getUserId(request)
-      if (!userId) {
-        return NextResponse.json(
-          { error: 'No autenticado' },
-          { status: 401 }
-        )
-      }
-
       // Obtener datos necesarios del formData
       const unidad = formData.unidad
       // Asegurarnos de obtener el ID del área, no el nombre
@@ -152,12 +358,36 @@ export async function POST(request: NextRequest) {
                     }
                     return out
                   }
-                  sesionesGuardadas = sesionesConDatos.map((s: any) => ({
-                    ...s,
-                    competenciasSeleccionadas: repararListaCortadaPorComa(s.competenciasSeleccionadas || []),
-                    capacidadesSeleccionadas: repararListaCortadaPorComa(s.capacidadesSeleccionadas || []),
-                    desempeniosSeleccionados: repararListaCortadaPorComa(s.desempeniosSeleccionados || [])
-                  }))
+                  sesionesGuardadas = filtrarSesionesTablaValidas(
+                    sesionesConDatos.map((s: any) => ({
+                      ...s,
+                      titulo: limpiarTituloSesion(String(s.titulo || '')),
+                      campoTematico: limpiarBrCelda(String(s.campoTematico || '')),
+                      evidencias: limpiarBrCelda(String(s.evidencias || '')),
+                      criterios: limpiarBrCelda(String(s.criterios || '')),
+                      instrumentoEvaluacion: limpiarBrCelda(
+                        String(s.instrumentoEvaluacion || '')
+                      ),
+                      competenciasSeleccionadas: repararListaCortadaPorComa(
+                        s.competenciasSeleccionadas || []
+                      ),
+                      capacidadesSeleccionadas: repararListaCortadaPorComa(
+                        s.capacidadesSeleccionadas || []
+                      ),
+                      desempeniosSeleccionados: repararListaCortadaPorComa(
+                        s.desempeniosSeleccionados || []
+                      ),
+                    }))
+                  )
+                  if (sesionesGuardadas.length === 0) sesionesGuardadas = null
+                  const solicitado = resolverNumeroSesionesForm(formData)
+                  if (
+                    solicitado > 0 &&
+                    sesionesGuardadas &&
+                    sesionesGuardadas.length !== solicitado
+                  ) {
+                    sesionesGuardadas = null
+                  }
                 }
               }
             } catch (parseError) {
@@ -221,6 +451,10 @@ export async function POST(request: NextRequest) {
             // Obtener título de la unidad si existe
             if (unidadData.tituloUnidad) {
               tituloUnidad = unidadData.tituloUnidad
+            }
+            const campoDesdePlan = textoCampoTematicoDesdeUnidadPlan(unidadData)
+            if (campoDesdePlan) {
+              campoTematicoUnidad = campoDesdePlan
             }
             
             const competenciasField = unidadData.competenciasSeleccionadas || unidadData.competencias
@@ -289,8 +523,16 @@ export async function POST(request: NextRequest) {
                   // Crear array de competencias para el loop
                   competencias.forEach((comp, idx) => {
                     const estandaresFormateados = comp.estandares
-                      .map((est, index) => `${String.fromCharCode(65 + index)}. ${est.descripcion}`)
-                      .join('\n')
+                      .map((est) =>
+                        String(est.descripcion || '')
+                          .replace(/\s+/g, ' ')
+                          .trim()
+                          .replace(/^[A-Za-z]\.\s*/, '')
+                          .replace(/\s+[A-Za-z]\.\s+/g, ' ')
+                          .trim()
+                      )
+                      .filter(Boolean)
+                      .join(' ')
                     
                     const competenciaData = {
                       competencianro: `COMPETENCIA ${comp.numeroCompetencia}`,
@@ -492,8 +734,16 @@ export async function POST(request: NextRequest) {
             console.log(`📋 [{{competencia}}] Agregando ${competencias.length} competencia(s) al array para generar tablas...`)
             competencias.forEach((comp, idx) => {
               const estandaresFormateados = comp.estandares
-                .map((est, index) => `${String.fromCharCode(65 + index)}. ${est.descripcion}`)
-                .join('\n')
+                .map((est) =>
+                  String(est.descripcion || '')
+                    .replace(/\s+/g, ' ')
+                    .trim()
+                    .replace(/^[A-Za-z]\.\s*/, '')
+                    .replace(/\s+[A-Za-z]\.\s+/g, ' ')
+                    .trim()
+                )
+                .filter(Boolean)
+                .join(' ')
               
               const competenciaData = {
                 competencianro: `COMPETENCIA ${comp.numeroCompetencia}`,
@@ -622,7 +872,6 @@ export async function POST(request: NextRequest) {
         // Obtener título de la unidad del plan anual
         let tituloUnidadParaEnfoques = tituloUnidad
         if (!tituloUnidadParaEnfoques && unidadParaEnfoques && areaIdParaEnfoques && gradoIdParaEnfoques) {
-          const userId = await getUserId(request)
           if (userId) {
             const planAnual = await prisma.planAnual.findFirst({
               where: {
@@ -691,7 +940,7 @@ export async function POST(request: NextRequest) {
 
           // Enviar el prompt a GPT-mini
           const controller = new AbortController()
-          const timeoutId = setTimeout(() => controller.abort(), 120000) // 120 segundos
+          const timeoutId = setTimeout(() => controller.abort(), OPENAI_TIMEOUT_MS)
 
           let openaiResponse: Response | undefined
           const maxRetries = 3
@@ -705,15 +954,16 @@ export async function POST(request: NextRequest) {
                   'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
                 },
                 body: JSON.stringify({
-                  model: 'gpt-4o-mini',
+                  model: MODELO_GPT,
                   messages: [
                     {
                       role: 'user',
                       content: promptText
                     }
                   ],
-                  max_tokens: 4000,
-                  temperature: 0.7,
+                  top_p: 1,
+                  max_completion_tokens: 4000,
+                  reasoning_effort: 'low',
                 }),
                 signal: controller.signal,
               })
@@ -751,6 +1001,7 @@ export async function POST(request: NextRequest) {
             const gptResponse = gptData.choices?.[0]?.message?.content || ''
 
             if (gptResponse) {
+              respuestaIaEnfoquesTexto = gptResponse
               // Parsear la respuesta de GPT para extraer SOLO las descripciones de enfoques
               // Luego buscar en la BD por descripción y obtener valores y actitudes
               const lineas = gptResponse.split('\n').filter((l: string) => l.trim())
@@ -897,7 +1148,12 @@ export async function POST(request: NextRequest) {
       producto: formData.producto || '',
       
       // Título de la unidad (desde plan anual o fallback)
-      titulounidad: tituloUnidad || (formData.unidad && formData.area ? `Unidad ${formData.unidad}: ${formData.area}` : ''),
+      titulounidad: tituloUnidadParaDocumento(
+        tituloUnidad ||
+          (formData.unidad && formData.area
+            ? `Unidad ${formData.unidad}: ${formData.area}`
+            : '')
+      ),
       
       // Propósito de la unidad (si no se generó con IA, usar el texto ingresado)
       propositounidad: formData.propositoUnidad || '',
@@ -967,48 +1223,42 @@ export async function POST(request: NextRequest) {
       }
       
       // Función helper para generar una tabla individual para una competencia
+      // Estándares en UNA sola celda, como párrafo: "A. ... B. ... C. ..."
+      const rPrContenidoXml = construirRPrContenidoXml(documentXml, [
+        '__TABLA_COMPETENCIAS_PLACEHOLDER__',
+        '{{competencia}}',
+        '{competencia}'
+      ])
+
       const generarTablaCompetencia = (comp: { competencianro: string; competenciadescripcion: string; estandares: string }): string => {
         const competenciaNumeroEscapado = escaparXML(comp.competencianro)
         const competenciaDescripcionEscapado = escaparXML(comp.competenciadescripcion)
+        const parrafoEstandares = String(comp.estandares || '')
+          .split(/\n+/)
+          .map((line) =>
+            line
+              .replace(/\s+/g, ' ')
+              .trim()
+              .replace(/^[A-Za-z]\.\s*/, '')
+              .replace(/\s+[A-Za-z]\.\s+/g, ' ')
+              .trim()
+          )
+          .filter(Boolean)
+          .join(' ')
+          .replace(/\s+[A-Za-z]\.\s+/g, ' ')
+          .trim()
+        const estandaresEscapado = escaparXML(parrafoEstandares)
         
-        // Convertir estándares en líneas para determinar si necesitamos combinar celdas
-        const lineasEstandares = comp.estandares.split('\n').filter((line: string) => line.trim() !== '')
-        const lineasEstandaresCount = lineasEstandares.length
-        
-        // Construir la tabla con bordes dobles y color #00B050 (mismo diseño que enfoques)
-        // Centrar la tabla usando w:jc w:val="center"
         let tablaXML = '<w:tbl><w:tblPr><w:tblStyle w:val="TableGrid"/><w:tblW w:w="14869" w:type="dxa"/><w:jc w:val="center"/><w:tblBorders><w:top w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:left w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:right w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:insideH w:val="double" w:sz="4" w:space="0" w:color="00B050"/><w:insideV w:val="double" w:sz="4" w:space="0" w:color="00B050"/></w:tblBorders><w:tblLayout w:type="fixed"/></w:tblPr><w:tblGrid><w:gridCol w:w="2962"/><w:gridCol w:w="11907"/></w:tblGrid>'
         
-        // Header row
+        // Header
         tablaXML += `<w:tr><w:trPr><w:trHeight w:val="340"/></w:trPr><w:tc><w:tcPr><w:tcW w:w="2962" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="C1F0C7"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="8" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="center"/></w:tcPr><w:p><w:pPr><w:jc w:val="center"/><w:rPr><w:b/></w:rPr></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t>${competenciaNumeroEscapado}</w:t></w:r></w:p></w:tc><w:tc><w:tcPr><w:tcW w:w="11907" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="C1F0C7"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="4" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="center"/></w:tcPr><w:p><w:pPr><w:jc w:val="center"/><w:rPr><w:b/></w:rPr></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t>ESTÁNDAR DE APRENDIZAJE</w:t></w:r></w:p></w:tc></w:tr>`
         
-        // Generar filas con combinación de celdas verticales (si hay múltiples estándares)
-        if (lineasEstandaresCount === 0) {
-          // Si no hay estándares, crear una fila vacía
-          tablaXML += `<w:tr><w:trPr><w:trHeight w:val="340"/></w:trPr><w:tc><w:tcPr><w:tcW w:w="2962" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="FFFFFF"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="8" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="top"/></w:tcPr><w:p><w:pPr><w:spacing w:after="0"/></w:pPr><w:r><w:t>${competenciaDescripcionEscapado}</w:t></w:r></w:p></w:tc><w:tc><w:tcPr><w:tcW w:w="11907" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="FFFFFF"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="4" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="top"/></w:tcPr><w:p><w:pPr><w:spacing w:after="0"/></w:pPr><w:r><w:t></w:t></w:r></w:p></w:tc></w:tr>`
-        } else {
-          // Generar una fila por cada estándar, combinando la celda de competencia verticalmente
-          lineasEstandares.forEach((linea, index) => {
-            const lineaEscapada = escaparXML(linea.trim())
-            const esPrimeraFila = index === 0
-            
-            tablaXML += `<w:tr><w:trPr><w:trHeight w:val="340"/></w:trPr>`
-            
-            // Columna 1: COMPETENCIA (combinar celdas verticalmente)
-            if (esPrimeraFila) {
-              // Primera fila: usar vMerge="restart"
-              tablaXML += `<w:tc><w:tcPr><w:tcW w:w="2962" w:type="dxa"/><w:vMerge w:val="restart"/><w:shd w:val="clear" w:color="auto" w:fill="FFFFFF"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="8" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="top"/></w:tcPr><w:p><w:pPr><w:spacing w:after="0"/></w:pPr><w:r><w:t>${competenciaDescripcionEscapado}</w:t></w:r></w:p></w:tc>`
-            } else {
-              // Filas siguientes: usar vMerge (celda vacía, solo propiedades)
-              tablaXML += `<w:tc><w:tcPr><w:vMerge/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="8" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders></w:tcPr><w:p/></w:tc>`
-            }
-            
-            // Columna 2: ESTÁNDAR DE APRENDIZAJE (sin combinar)
-            tablaXML += `<w:tc><w:tcPr><w:tcW w:w="11907" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="FFFFFF"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="4" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="top"/></w:tcPr><w:p><w:pPr><w:spacing w:after="0"/></w:pPr><w:r><w:t>${lineaEscapada}</w:t></w:r></w:p></w:tc>`
-            
-            tablaXML += `</w:tr>`
-          })
-        }
+        // Una sola fila de contenido: competencia | estándares en párrafo justificado
+        tablaXML += `<w:tr><w:trPr><w:trHeight w:val="340"/></w:trPr>`
+        tablaXML += `<w:tc><w:tcPr><w:tcW w:w="2962" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="FFFFFF"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="8" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="top"/></w:tcPr><w:p><w:pPr><w:jc w:val="both"/><w:spacing w:after="0"/></w:pPr><w:r>${rPrContenidoXml}<w:t>${competenciaDescripcionEscapado}</w:t></w:r></w:p></w:tc>`
+        tablaXML += `<w:tc><w:tcPr><w:tcW w:w="11907" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="FFFFFF"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="4" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="top"/></w:tcPr><w:p><w:pPr><w:jc w:val="both"/><w:spacing w:after="0" w:before="0"/><w:ind w:left="0" w:right="0"/></w:pPr><w:r>${rPrContenidoXml}<w:t xml:space="preserve">${estandaresEscapado}</w:t></w:r></w:p></w:tc>`
+        tablaXML += `</w:tr>`
         
         tablaXML += '</w:tbl>'
         return tablaXML
@@ -1023,7 +1273,7 @@ export async function POST(request: NextRequest) {
         console.log(`📋 [{{competencia}}] Detalle de competencias en el array:`)
         competenciasArray.forEach((comp, idx) => {
           console.log(`   ${idx + 1}. ${comp.competencianro}: ${comp.competenciadescripcion.substring(0, 50)}...`)
-          console.log(`      Estándares: ${comp.estandares.split('\n').length} líneas`)
+          console.log(`      Estándares (párrafo): ${comp.estandares.substring(0, 80)}...`)
         })
         
         console.log(`📊 [{{competencia}}] Generando ${competenciasArray.length} tabla(s)...`)
@@ -1146,23 +1396,24 @@ export async function POST(request: NextRequest) {
               }
               
               if (paraStart > -1 && paraEnd > -1 && paraEnd > paraStart) {
-                // Asegurarse de que todas las tablas estén centradas
-                // Verificar que todas tengan w:jc w:val="center" (puede haber múltiples tablas concatenadas)
+                // Centrar la TABLA en la página, sin tocar la justificación de párrafos (w:jc both)
                 let tablaCentrada = tabla
                 
-                // Si alguna tabla no tiene w:jc, agregarlo después de w:tblW
-                if (!tablaCentrada.includes('<w:jc')) {
-                  tablaCentrada = tablaCentrada.replace(
-                    /(<w:tblW[^>]*>)/,
-                    '$1<w:jc w:val="center"/>'
-                  )
-                } else {
-                  // Si ya tiene w:jc, asegurarse de que esté en "center"
-                  tablaCentrada = tablaCentrada.replace(
-                    /<w:jc\s+w:val="[^"]*"/g,
-                    '<w:jc w:val="center"'
-                  )
-                }
+                tablaCentrada = tablaCentrada.replace(
+                  /(<w:tblPr>[\s\S]*?<\/w:tblPr>)/g,
+                  (tblPrBlock: string) => {
+                    if (/<w:jc\s+w:val=/.test(tblPrBlock)) {
+                      return tblPrBlock.replace(
+                        /<w:jc\s+w:val="[^"]*"/g,
+                        '<w:jc w:val="center"'
+                      )
+                    }
+                    return tblPrBlock.replace(
+                      /(<w:tblW[^>]*>)/,
+                      '$1<w:jc w:val="center"/>'
+                    )
+                  }
+                )
                 
                 // Eliminar cualquier w:tblInd que pueda interferir con el centrado
                 tablaCentrada = tablaCentrada.replace(
@@ -1242,6 +1493,11 @@ export async function POST(request: NextRequest) {
         }
         
         // Generar tabla de enfoques transversales, valores y actitudes
+        const rPrEnfoquesXml = construirRPrContenidoXml(documentXml, [
+          '__TABLA_ENFOQUES_PLACEHOLDER__',
+          '{{enfoques}}',
+          '{enfoques}'
+        ])
         
         // Función helper para generar la tabla de enfoques
         const generarTablaEnfoques = (): string => {
@@ -1285,17 +1541,17 @@ export async function POST(request: NextRequest) {
               // Columna 1: ENFOQUES TRANSVERSALES (combinar celdas verticalmente)
               if (esPrimeraFilaEnfoque) {
                 // Primera fila del enfoque: usar vMerge="restart"
-                tablaXML += `<w:tc><w:tcPr><w:tcW w:w="4956" w:type="dxa"/><w:vMerge w:val="restart"/><w:shd w:val="clear" w:color="auto" w:fill="FFFFFF"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="8" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="top"/></w:tcPr><w:p><w:pPr><w:spacing w:after="0"/></w:pPr><w:r><w:t>${enfoqueEscapado}</w:t></w:r></w:p></w:tc>`
+                tablaXML += `<w:tc><w:tcPr><w:tcW w:w="4956" w:type="dxa"/><w:vMerge w:val="restart"/><w:shd w:val="clear" w:color="auto" w:fill="FFFFFF"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="8" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="top"/></w:tcPr><w:p><w:pPr><w:spacing w:after="0"/></w:pPr><w:r>${rPrEnfoquesXml}<w:t>${enfoqueEscapado}</w:t></w:r></w:p></w:tc>`
               } else {
                 // Filas siguientes: usar vMerge (celda vacía, solo propiedades)
                 tablaXML += `<w:tc><w:tcPr><w:vMerge/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="8" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders></w:tcPr><w:p/></w:tc>`
               }
               
               // Columna 2: VALORES (sin combinar)
-              tablaXML += `<w:tc><w:tcPr><w:tcW w:w="4956" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="FFFFFF"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="4" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="top"/></w:tcPr><w:p><w:pPr><w:spacing w:after="0"/></w:pPr><w:r><w:t>${valorEscapado}</w:t></w:r></w:p></w:tc>`
+              tablaXML += `<w:tc><w:tcPr><w:tcW w:w="4956" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="FFFFFF"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="4" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="top"/></w:tcPr><w:p><w:pPr><w:spacing w:after="0"/></w:pPr><w:r>${rPrEnfoquesXml}<w:t>${valorEscapado}</w:t></w:r></w:p></w:tc>`
               
               // Columna 3: ACTITUDES (sin combinar)
-              tablaXML += `<w:tc><w:tcPr><w:tcW w:w="4957" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="FFFFFF"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="4" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="top"/></w:tcPr><w:p><w:pPr><w:spacing w:after="0"/></w:pPr><w:r><w:t>${actitudEscapada}</w:t></w:r></w:p></w:tc>`
+              tablaXML += `<w:tc><w:tcPr><w:tcW w:w="4957" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="FFFFFF"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="4" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="top"/></w:tcPr><w:p><w:pPr><w:spacing w:after="0"/></w:pPr><w:r>${rPrEnfoquesXml}<w:t>${actitudEscapada}</w:t></w:r></w:p></w:tc>`
               
               tablaXML += `</w:tr>`
             })
@@ -1468,6 +1724,11 @@ export async function POST(request: NextRequest) {
         }
 
         // Generar tabla de competencias transversales
+        const rPrCompTransvXml = construirRPrContenidoXml(documentXml, [
+          '__TABLA_COMPETENCIAS_TRANSVERSALES_PLACEHOLDER__',
+          '{{competenciatransversal}}',
+          '{competenciatransversal}'
+        ])
         
         // Función helper para generar la tabla de competencias transversales (3 columnas: COMPETENCIAS TRANSVERSALES, CAPACIDADES, DESEMPEÑOS)
         const generarTablaCompetenciasTransversales = (): string => {
@@ -1517,7 +1778,7 @@ export async function POST(request: NextRequest) {
                 // Columna 1: COMPETENCIAS TRANSVERSALES (combinar celdas verticalmente)
                 if (esPrimeraFilaCompetencia) {
                   // Primera fila de la competencia: usar vMerge="restart"
-                  tablaXML += `<w:tc><w:tcPr><w:tcW w:w="4956" w:type="dxa"/><w:vMerge w:val="restart"/><w:shd w:val="clear" w:color="auto" w:fill="FFFFFF"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="8" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="top"/></w:tcPr><w:p><w:pPr><w:spacing w:after="0"/></w:pPr><w:r><w:t>${competenciaEscapada}</w:t></w:r></w:p></w:tc>`
+                  tablaXML += `<w:tc><w:tcPr><w:tcW w:w="4956" w:type="dxa"/><w:vMerge w:val="restart"/><w:shd w:val="clear" w:color="auto" w:fill="FFFFFF"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="8" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="top"/></w:tcPr><w:p><w:pPr><w:spacing w:after="0"/></w:pPr><w:r>${rPrCompTransvXml}<w:t>${competenciaEscapada}</w:t></w:r></w:p></w:tc>`
                 } else {
                   // Filas siguientes: usar vMerge (celda vacía, solo propiedades)
                   tablaXML += `<w:tc><w:tcPr><w:vMerge/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="8" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders></w:tcPr><w:p/></w:tc>`
@@ -1526,14 +1787,14 @@ export async function POST(request: NextRequest) {
                 // Columna 2: CAPACIDADES (combinar celdas verticalmente)
                 if (esPrimeraFilaCapacidad) {
                   // Primera fila de la capacidad: usar vMerge="restart"
-                  tablaXML += `<w:tc><w:tcPr><w:tcW w:w="4956" w:type="dxa"/><w:vMerge w:val="restart"/><w:shd w:val="clear" w:color="auto" w:fill="FFFFFF"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="4" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="top"/></w:tcPr><w:p><w:pPr><w:spacing w:after="0"/></w:pPr><w:r><w:t>${capacidadEscapada}</w:t></w:r></w:p></w:tc>`
+                  tablaXML += `<w:tc><w:tcPr><w:tcW w:w="4956" w:type="dxa"/><w:vMerge w:val="restart"/><w:shd w:val="clear" w:color="auto" w:fill="FFFFFF"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="4" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="top"/></w:tcPr><w:p><w:pPr><w:spacing w:after="0"/></w:pPr><w:r>${rPrCompTransvXml}<w:t>${capacidadEscapada}</w:t></w:r></w:p></w:tc>`
                 } else {
                   // Filas siguientes: usar vMerge (celda vacía, solo propiedades)
                   tablaXML += `<w:tc><w:tcPr><w:vMerge/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="4" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders></w:tcPr><w:p/></w:tc>`
                 }
                 
                 // Columna 3: DESEMPEÑOS (sin combinar)
-                tablaXML += `<w:tc><w:tcPr><w:tcW w:w="4957" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="FFFFFF"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="4" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="top"/></w:tcPr><w:p><w:pPr><w:spacing w:after="0"/></w:pPr><w:r><w:t>${desempenioEscapado}</w:t></w:r></w:p></w:tc>`
+                tablaXML += `<w:tc><w:tcPr><w:tcW w:w="4957" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="FFFFFF"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="4" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="top"/></w:tcPr><w:p><w:pPr><w:spacing w:after="0"/></w:pPr><w:r>${rPrCompTransvXml}<w:t>${desempenioEscapado}</w:t></w:r></w:p></w:tc>`
                 
                 tablaXML += `</w:tr>`
               })
@@ -1749,7 +2010,7 @@ export async function POST(request: NextRequest) {
           // Columna 0: TÍTULOS (con "Sesión X:")
           tablaXML += `<w:tc><w:tcPr><w:tcW w:w="${anchoColumna}" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="FFFFFF"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="4" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="top"/></w:tcPr>`
           tablaXML += `<w:p><w:pPr><w:spacing w:after="50" w:before="100"/></w:pPr><w:r><w:rPr><w:sz w:val="16"/><w:color w:val="000000"/></w:rPr><w:t>${escaparXML(`Sesión ${numeroSesion}:`)}</w:t></w:r></w:p>`
-          tablaXML += `<w:p><w:pPr><w:spacing w:after="100" w:before="0"/></w:pPr><w:r><w:rPr><w:sz w:val="16"/><w:color w:val="000000"/></w:rPr><w:t>${escaparXML(sesion.titulo || '')}</w:t></w:r></w:p></w:tc>`
+          tablaXML += `<w:p><w:pPr><w:spacing w:after="100" w:before="0"/></w:pPr><w:r><w:rPr><w:sz w:val="16"/><w:color w:val="000000"/></w:rPr><w:t>${escaparXML(limpiarTituloSesion(sesion.titulo || ''))}</w:t></w:r></w:p></w:tc>`
           
           // Columna 1: CAMPO TEMÁTICO / CONOCIMIENTO
           const campoTematicoTexto = sesion.campoTematico || ''
@@ -1795,7 +2056,7 @@ export async function POST(request: NextRequest) {
           }
           tablaXML += `</w:tc>`
           
-          // Columna 4: DESEMPEÑO PRECISADO (solo saltos de línea, sin viñetas)
+          // Columna 4: DESEMPEÑO PRECISADO (con viñetas y saltos de línea)
           tablaXML += `<w:tc><w:tcPr><w:tcW w:w="${anchoColumna}" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="FFFFFF"/><w:tcBorders><w:top w:val="double" w:sz="4" w:color="00B050"/><w:left w:val="double" w:sz="4" w:color="00B050"/><w:bottom w:val="double" w:sz="4" w:color="00B050"/><w:right w:val="double" w:sz="4" w:color="00B050"/></w:tcBorders><w:vAlign w:val="top"/></w:tcPr>`
           
           if (Array.isArray(sesion.desempeniosSeleccionados) && sesion.desempeniosSeleccionados.length > 0) {
@@ -1803,16 +2064,16 @@ export async function POST(request: NextRequest) {
               // Limpiar <br> tags y procesar múltiples líneas
               let desempenioLimpio = (desempenio || '').replace(/<br\s*\/?>/gi, '\n').replace(/<BR\s*\/?>/gi, '\n').trim()
               
-              // Si tiene múltiples líneas, procesar cada una (sin viñetas)
               const lineasDesempenio = desempenioLimpio.split('\n').filter((l: string) => l.trim())
               
               lineasDesempenio.forEach((linea: string, lineaIdx: number) => {
                 const lineaLimpia = linea.trim()
                 if (lineaLimpia) {
-                  // Remover viñetas si las tiene, solo mantener el texto
-                  const lineaSinVinieta = lineaLimpia.replace(/^[•\-\*]\s*/, '').trim()
+                  const lineaConVinieta = lineaLimpia.startsWith('•') || lineaLimpia.startsWith('-') || lineaLimpia.startsWith('*')
+                    ? lineaLimpia
+                    : `• ${lineaLimpia}`
                   
-                  const desempenioEscapado = escaparXML(lineaSinVinieta)
+                  const desempenioEscapado = escaparXML(lineaConVinieta)
                   const esUltimaLinea = lineaIdx === lineasDesempenio.length - 1
                   const esUltimoItem = idx === sesion.desempeniosSeleccionados.length - 1
                   
@@ -1866,7 +2127,11 @@ export async function POST(request: NextRequest) {
         })
         
         tablaXML += `</w:tbl>`
-        return tablaXML
+        // Justificar todo el texto de celdas de datos (los encabezados ya tienen jc=center)
+        return tablaXML.replace(
+          /<w:pPr><w:spacing/g,
+          '<w:pPr><w:jc w:val="both"/><w:spacing'
+        )
       }
       
       // Si hay sesiones guardadas, usarlas para generar la tabla sin IA
@@ -1881,8 +2146,22 @@ export async function POST(request: NextRequest) {
       // Solo generar con IA si no hay sesiones guardadas
       if (!usarSesionesGuardadas) {
         try {
-          // Leer directamente el Word del prompt (igual que generate-prompt)
-          const promptWordPath = path.join(process.cwd(), 'templates', 'PROMT_UNIDAD DE APRENDIZAJE.docx')
+          // Prompt Word por área: templates/prompstUA/<nombre del área>.docx
+          const areaParaPrompt = nombreAreaDesdeForm(formData)
+          const promptResuelto = resolverPromptUnidadPorArea(areaParaPrompt)
+          const promptWordPath = promptResuelto.path
+          if (!promptWordPath || !fs.existsSync(promptWordPath)) {
+            throw new Error(
+              `No se encontró prompt Word para el área "${areaParaPrompt || '(sin área)'}". ` +
+                `Coloca el archivo en templates/prompstUA con el nombre del área.`
+            )
+          }
+          console.log(
+            `📄 [PROMPT UA] Área="${areaParaPrompt}" → ${
+              promptResuelto.matchedFile ||
+              (promptResuelto.usedFallback ? 'fallback global' : promptWordPath)
+            }`
+          )
           if (fs.existsSync(promptWordPath)) {
           const wordBuffer = fs.readFileSync(promptWordPath)
           const result = await mammoth.extractRawText({ buffer: wordBuffer })
@@ -1938,6 +2217,19 @@ export async function POST(request: NextRequest) {
           } catch (error) {
           }
           
+          const tituloDeUnidadPrompt =
+            tituloUnidad ||
+            String(formData.tituloUnidad || '').trim() ||
+            (formData.unidad && formData.area
+              ? `Unidad ${formData.unidad}: ${formData.area}`
+              : '')
+          const campoTematicoPrompt = String(
+            formData.campoTematico || campoTematicoUnidad || ''
+          ).trim()
+          console.log(
+            `📝 [PROMPT UA] campotematico length=${campoTematicoPrompt.length} titulodeunidad="${String(tituloDeUnidadPrompt).substring(0, 60)}"`
+          )
+
           // Preparar datos para el prompt (similar a data pero con nombres específicos del prompt)
           const promptData = {
             area: formData.area || '',
@@ -1945,9 +2237,12 @@ export async function POST(request: NextRequest) {
             ciclo: formData.ciclo || '',
             tipoie: formData.tipoIE === '1' ? 'Pública' : formData.tipoIE === '2' ? 'Privado' : '',
             situacionsignficativa: formData.situacionSignificativa || '',
-            numsesiones: formData.sesiones?.length?.toString() || '0',
+            numsesiones: String(resolverNumeroSesionesForm(formData) || 0),
             producto: formData.producto || '',
-            competencias: competenciasParaPrompt.length > 0 ? competenciasParaPrompt : []
+            titulodeunidad: tituloDeUnidadPrompt,
+            campotematico: campoTematicoPrompt,
+            competencias: competenciasParaPrompt.length > 0 ? competenciasParaPrompt : [],
+            competenciasdelabd: generarCompetenciasBdTexto(competenciasParaPrompt)
           }
           
           // Reemplazar variables manualmente (docxtemplater no funciona bien con texto plano)
@@ -1958,6 +2253,15 @@ export async function POST(request: NextRequest) {
           promptText = promptText.replace(/\{\{situacionsignficativa\}\}/g, promptData.situacionsignficativa)
           promptText = promptText.replace(/\{\{numsesiones\}\}/g, promptData.numsesiones)
           promptText = promptText.replace(/\{\{producto\}\}/g, promptData.producto)
+          promptText = promptText.replace(/\{\{titulodeunidad\}\}/g, promptData.titulodeunidad)
+          promptText = promptText.replace(/\{\{campotematico\}\}/g, promptData.campotematico)
+          promptText = promptText.replace(
+            /\{\{competenciasdelabd\}\}/g,
+            promptData.competenciasdelabd
+          )
+          if (parseInt(promptData.numsesiones, 10) > 0) {
+            promptText += `\n\nIMPORTANTE: La tabla didáctica debe tener exactamente ${promptData.numsesiones} filas de sesiones (Sesión 1 hasta Sesión ${promptData.numsesiones}). No generes más ni menos filas.`
+          }
           
           // Reemplazar loop de competencias
           if (promptData.competencias.length > 0) {
@@ -1971,43 +2275,27 @@ export async function POST(request: NextRequest) {
           const tieneMatriz = promptText.includes('{{matriz}}')
           
           if (tieneMatriz) {
-            // Generar matriz en formato de texto plano para GPT (EXACTAMENTE igual que generate-prompt)
-            let matrizTexto = ''
-            
-            if (competenciasConDatos.length === 0) {
-              matrizTexto = 'No se encontraron competencias para mostrar en la matriz.'
-            } else {
-              competenciasConDatos.forEach((competencia, compIdx) => {
-                if (compIdx > 0) {
-                  matrizTexto += '\n\n'
-                }
-                
-                matrizTexto += `${competencia.competenciaNumero}: ${competencia.competenciaDescripcion}\n`
-                matrizTexto += 'COMPETENCIA | CAPACIDADES | DESEMPEÑOS PRECISADOS\n'
-                matrizTexto += '--- | --- | ---\n'
-                
-                competencia.capacidades.forEach((capacidad, capIdx) => {
-                  const desempeniosTexto = capacidad.desempenios
-                    .map((des, idx) => `${idx + 1}. ${des}`)
-                    .join('; ')
-                  
-                  const competenciaTexto = capIdx === 0 ? competencia.competenciaDescripcion : ''
-                  matrizTexto += `${competenciaTexto} | ${capacidad.capacidadDescripcion} | ${desempeniosTexto}\n`
-                })
-              })
-            }
-            
-            // Reemplazar {{matriz}} con el texto de la matriz
+            const matrizTexto = generarMatrizTexto(competenciasConDatos)
             promptText = promptText.replace('{{matriz}}', matrizTexto)
           }
           
+          const totalSesionesPrompt = resolverNumeroSesionesForm(formData)
+          const MAX_TOKENS_SALIDA_TABLA = 16384
+          const maxTokensTabla =
+            totalSesionesPrompt >= 6
+              ? MAX_TOKENS_SALIDA_TABLA
+              : Math.min(
+                  MAX_TOKENS_SALIDA_TABLA,
+                  Math.max(6000, 2500 + totalSesionesPrompt * 1200)
+                )
+
           // Enviar a GPT (igual que generate-prompt)
           if (process.env.OPENAI_API_KEY) {
             const startTime = Date.now()
             
-            // Crear un AbortController para manejar timeouts más largos (igual que generate-prompt)
+            // Crear un AbortController para manejar timeouts más largos
             const controller = new AbortController()
-            const timeoutId = setTimeout(() => controller.abort(), 120000) // 120 segundos de timeout
+            const timeoutId = setTimeout(() => controller.abort(), OPENAI_TIMEOUT_MS)
             
             let openaiResponse: Response | undefined
             const maxRetries = 3
@@ -2023,15 +2311,16 @@ export async function POST(request: NextRequest) {
                     'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
                   },
                   body: JSON.stringify({
-                    model: 'gpt-4o-mini',
+                    model: MODELO_GPT,
                     messages: [
                       {
                         role: 'user',
                         content: promptText
                       }
                     ],
-                    max_tokens: 4000,
-                    temperature: 0.7,
+                    top_p: 1,
+                    max_completion_tokens: maxTokensTabla,
+                    reasoning_effort: 'low',
                   }),
                   signal: controller.signal,
                 })
@@ -2043,12 +2332,22 @@ export async function POST(request: NextRequest) {
                   break
                 }
                 
+                // Leer el cuerpo del error para saber el motivo real (quota vs rate limit)
+                const bodyErr = await openaiResponse.clone().json().catch(() => ({} as any))
+                const motivo = bodyErr?.error?.code || bodyErr?.error?.type || ''
+                const detalle = bodyErr?.error?.message || openaiResponse.statusText
+                console.error(
+                  `[unidad] OpenAI ${openaiResponse.status} (intento ${attempt}/${maxRetries}) code="${motivo}" → ${detalle}`
+                )
+
                 // Si no es exitosa pero no es el último intento, esperar y reintentar
                 if (attempt < maxRetries) {
                   const delay = Math.min(1000 * Math.pow(2, attempt - 1), 5000)
                   await new Promise(resolve => setTimeout(resolve, delay))
                 } else {
-                  throw new Error(`OpenAI API error: ${openaiResponse.status} ${openaiResponse.statusText}`)
+                  throw new Error(
+                    `OpenAI API error: ${openaiResponse.status}${motivo ? ` ${motivo}` : ''} - ${detalle}`
+                  )
                 }
                 
               } catch (fetchError: any) {
@@ -2084,51 +2383,63 @@ export async function POST(request: NextRequest) {
             // Si llegamos aquí, la respuesta fue exitosa
             const gptData = await openaiResponse.json()
             const gptResponse = gptData.choices?.[0]?.message?.content || ''
+
+            if (!gptResponse.trim()) {
+              console.warn(
+                '[unidad] Primera respuesta de tabla vacía. finish_reason=',
+                gptData.choices?.[0]?.finish_reason,
+                'usage=',
+                gptData.usage
+              )
+            }
             
             if (gptResponse) {
-              // Procesar la respuesta de GPT: convertir tablas a formato Word y mantener texto como párrafos
-              // IMPORTANTE: Preservar TODO el contenido tal cual llega de GPT (EXACTAMENTE igual que generate-prompt)
-              // NO limpiar <br> aquí, se limpiará dentro de las celdas de la tabla
-              const lineas = gptResponse.split('\n')
-              
-              // Función para parsear tablas desde el texto (formato con pipes |) - EXACTAMENTE igual que generate-prompt
+              respuestaIaTablaTexto = agregarTextoRespuestaIa(respuestaIaTablaTexto, gptResponse)
+              // Función para parsear tablas desde el texto (formato con pipes |)
+              /** Une columnas de una fila: pipes (|) o tabulaciones. */
+              const parsearColumnasLineaTabla = (linea: string): string[] | null => {
+                const trimmed = linea.trim()
+                if (!trimmed) return null
+
+                if (trimmed.includes('|') && trimmed.split('|').length > 2) {
+                  const columnas = trimmed.split('|').map((col) => col.trim())
+                  // Ignorar separadores markdown (|---|---|)
+                  if (columnas.every((col) => !col || /^[-:]+$/.test(col))) return null
+                  return columnas
+                }
+
+                // GPT a veces entrega la tabla con tabs en vez de pipes
+                if (trimmed.includes('\t')) {
+                  const columnas = trimmed.split('\t').map((col) => col.trim())
+                  if (columnas.length < 3) return null
+                  if (columnas.every((col) => !col || /^[-:]+$/.test(col))) return null
+                  return columnas
+                }
+
+                return null
+              }
+
               const parsearTabla = (lineas: string[]): { esTabla: boolean; filas?: string[][]; numColumnas?: number } => {
                 if (lineas.length === 0) return { esTabla: false }
-                
-                // Detectar si las líneas tienen pipes (formato de tabla)
-                const lineasConPipes = lineas.filter((l: string) => l.trim().includes('|') && l.trim().split('|').length > 2)
-                
-                if (lineasConPipes.length === 0) return { esTabla: false }
-                
-                // Parsear las filas de la tabla
+
                 const filas: string[][] = []
                 let numColumnas = 0
-                
-                for (const linea of lineasConPipes) {
-                  // Dividir por pipes y limpiar espacios
-                  // IMPORTANTE: NO eliminar columnas vacías, solo hacer trim para preservar TODAS las columnas
-                  // EXACTAMENTE igual que generate-prompt - preservar TODAS las columnas
-                  const columnas = linea
-                    .split('|')
-                    .map(col => col.trim())
-                  
-                  // Ignorar líneas separadoras (como |---|---|)
-                  if (columnas.length > 0 && !columnas.every(col => /^[-:]+$/.test(col))) {
-                    filas.push(columnas)
-                    numColumnas = Math.max(numColumnas, columnas.length)
-                  }
+
+                for (const linea of lineas) {
+                  const columnas = parsearColumnasLineaTabla(linea)
+                  if (!columnas) continue
+                  filas.push(columnas)
+                  numColumnas = Math.max(numColumnas, columnas.length)
                 }
-                
-                
+
                 if (filas.length === 0) return { esTabla: false }
-                
-                // Normalizar el número de columnas en todas las filas
-                filas.forEach(fila => {
+
+                filas.forEach((fila) => {
                   while (fila.length < numColumnas) {
                     fila.push('')
                   }
                 })
-                
+
                 return { esTabla: true, filas, numColumnas }
               }
               
@@ -2225,7 +2536,7 @@ export async function POST(request: NextRequest) {
                     // Si es la primera columna (TÍTULOS), agregar "Sesión X:" en una línea y el título en la siguiente
                     if (indiceColumna === 0) {
                       const sesionEscapada = escaparXML(`Sesión ${numeroSesion}:`)
-                      const tituloEscapado = escaparXML(celdaLimpia.trim())
+                      const tituloEscapado = escaparXML(limpiarTituloSesion(celdaLimpia))
                       
                       // Primera línea: "Sesión X:"
                       tablaXML += `<w:p><w:pPr><w:spacing w:after="50" w:before="100"/></w:pPr><w:r><w:rPr><w:sz w:val="16"/><w:color w:val="000000"/></w:rPr><w:t>${sesionEscapada}</w:t></w:r></w:p>`
@@ -2234,26 +2545,19 @@ export async function POST(request: NextRequest) {
                       tablaXML += `<w:p><w:pPr><w:spacing w:after="100" w:before="0"/></w:pPr><w:r><w:rPr><w:sz w:val="16"/><w:color w:val="000000"/></w:rPr><w:t>${tituloEscapado}</w:t></w:r></w:p>`
                     } else {
                       // Para las demás columnas, procesar normalmente
-                      // Columnas que necesitan viñetas: CAPACIDADES (3), CRITERIOS (6)
-                      // DESEMPEÑO PRECISADO (4) solo necesita saltos de línea, sin viñetas
-                      const columnasConVinietas = [3, 6]
+                      // Columnas con viñetas: CAPACIDADES (3), DESEMPEÑO PRECISADO (4), CRITERIOS (6)
+                      const columnasConVinietas = [3, 4, 6]
                       const necesitaVinietas = columnasConVinietas.includes(indiceColumna)
-                      const esDesempenio = indiceColumna === 4
                       
                       // Si la celda tiene múltiples líneas (por <br> convertidos), crear múltiples párrafos
                       const lineasCelda = celdaLimpia.split('\n').filter((l: string) => l.trim() || l === '')
                       
-                      if (lineasCelda.length > 1 || necesitaVinietas || esDesempenio) {
-                        // Múltiples líneas o columna que necesita viñetas o es DESEMPEÑO PRECISADO - crear múltiples párrafos
+                      if (lineasCelda.length > 1 || necesitaVinietas) {
+                        // Múltiples líneas o columna que necesita viñetas - crear múltiples párrafos
                         lineasCelda.forEach((linea, idx) => {
                           let lineaProcesada = linea || ' '
                           
-                          if (esDesempenio && linea.trim()) {
-                            // DESEMPEÑO PRECISADO: remover viñetas si las tiene, solo mantener el texto
-                            const lineaLimpia = linea.trim()
-                            lineaProcesada = lineaLimpia.replace(/^[•\-\*]\s*/, '').trim()
-                          } else if (necesitaVinietas && linea.trim()) {
-                            // CAPACIDADES o CRITERIOS: agregar viñeta si no tiene
+                          if (necesitaVinietas && linea.trim()) {
                             const lineaLimpia = linea.trim()
                             if (!lineaLimpia.startsWith('•') && !lineaLimpia.startsWith('-') && !lineaLimpia.startsWith('*')) {
                               lineaProcesada = `• ${lineaLimpia}`
@@ -2269,12 +2573,7 @@ export async function POST(request: NextRequest) {
                         // Una sola línea
                         let celdaProcesada = celdaLimpia || ' '
                         
-                        if (esDesempenio && celdaLimpia.trim()) {
-                          // DESEMPEÑO PRECISADO: remover viñetas si las tiene
-                          const celdaLimpiaTrim = celdaLimpia.trim()
-                          celdaProcesada = celdaLimpiaTrim.replace(/^[•\-\*]\s*/, '').trim()
-                        } else if (necesitaVinietas && celdaLimpia.trim()) {
-                          // CAPACIDADES o CRITERIOS: agregar viñeta si no tiene
+                        if (necesitaVinietas && celdaLimpia.trim()) {
                           const celdaLimpiaTrim = celdaLimpia.trim()
                           if (!celdaLimpiaTrim.startsWith('•') && !celdaLimpiaTrim.startsWith('-') && !celdaLimpiaTrim.startsWith('*')) {
                             celdaProcesada = `• ${celdaLimpiaTrim}`
@@ -2295,153 +2594,278 @@ export async function POST(request: NextRequest) {
                 })
                 
                 tablaXML += `</w:tbl>`
-                return tablaXML
+                // Justificar todo el texto de celdas de datos (los encabezados ya tienen jc=center)
+                return tablaXML.replace(
+                  /<w:pPr><w:spacing/g,
+                  '<w:pPr><w:jc w:val="both"/><w:spacing'
+                )
               }
               
               // tablaDidacticaXML ya está declarada en scope amplio
-              let bloqueActual: string[] = []
-              // Reiniciar el array de sesiones generadas por IA para este procesamiento
               sesionesGeneradasPorIA = []
               
-              // Función para extraer datos de sesiones desde las filas parseadas
+              const columnasDatosDeFila = (fila: string[]): string[] | null => {
+                let cols = fila.map((c) => c.trim())
+                // Formato markdown con pipes: | col1 | col2 | ... | → extremos vacíos
+                if (
+                  cols.length >= 10 &&
+                  cols[0] === '' &&
+                  cols[cols.length - 1] === ''
+                ) {
+                  cols = cols.slice(1, -1)
+                }
+                // Formato con tabs (o pipes sin extremos vacíos): ya vienen 8 columnas de datos
+                if (cols.length >= 8) return cols.slice(0, 8)
+                return null
+              }
+
               const extraerDatosSesiones = (filas: string[][]) => {
-                // Saltar las primeras dos filas (encabezados) y procesar las filas de datos
-                for (let i = 2; i < filas.length; i++) {
-                  const fila = filas[i]
-                  
-                  // Verificar que la fila no sea un encabezado (contiene palabras clave de encabezados)
-                  const filaTexto = fila.join(' ').toUpperCase()
-                  const esEncabezado = filaTexto.includes('TÍTULOS') || 
-                                     filaTexto.includes('CAMPO TEMÁTICO') || 
-                                     filaTexto.includes('COMPETENCIA') || 
-                                     filaTexto.includes('CAPACIDADES') || 
-                                     filaTexto.includes('DESEMPEÑO') ||
-                                     filaTexto.includes('EVIDENCIAS') ||
-                                     filaTexto.includes('CRITERIOS') ||
-                                     filaTexto.includes('INSTRUMENTO') ||
-                                     filaTexto.includes('PROPÓSITOS') ||
-                                     filaTexto.includes('EVALUACIÓN') ||
-                                     /^[-:|]+$/.test(filaTexto.replace(/\s/g, '')) // Separadores como |---|---|
-                  
-                  if (esEncabezado) {
-                    continue // Saltar esta fila si es un encabezado
-                  }
-                  
-                  // Eliminar primera y última columna (slice(1, -1))
-                  const filaSinPrimeraYUltima = fila.slice(1, -1)
-                  
-                  // Estructura de la fila después de eliminar primera y última columna:
-                  // [0] TÍTULOS
-                  // [1] CAMPO TEMÁTICO / CONOCIMIENTO
-                  // [2] COMPETENCIA
-                  // [3] CAPACIDADES
-                  // [4] DESEMPEÑO PRECISADO
-                  // [5] EVIDENCIAS
-                  // [6] CRITERIOS
-                  // [7] INSTRUMENTO DE EVALUACIÓN
-                  
-                  if (filaSinPrimeraYUltima.length >= 8) {
-                    const titulo = (filaSinPrimeraYUltima[0] || '').trim()
-                    const campoTematico = (filaSinPrimeraYUltima[1] || '').trim()
-                    const competencia = (filaSinPrimeraYUltima[2] || '').trim()
-                    const capacidades = (filaSinPrimeraYUltima[3] || '').trim()
-                    const desempenios = (filaSinPrimeraYUltima[4] || '').trim()
-                    const evidencias = (filaSinPrimeraYUltima[5] || '').trim()
-                    const criterios = (filaSinPrimeraYUltima[6] || '').trim()
-                    const instrumentoEvaluacion = (filaSinPrimeraYUltima[7] || '').trim()
-                    
-                    // Verificar que al menos el título tenga contenido (para evitar guardar filas vacías o encabezados)
-                    if (!titulo || titulo.length < 3) {
-                      continue // Saltar filas sin título válido
-                    }
-                    
-                    // Parsear competencias, capacidades y desempeños. NO usar coma: muchas capacidades contienen coma (ej. "Adecúa, organiza y desarrolla...").
-                    // Separar solo por saltos de línea, <br> o viñeta • para no cortar texto interno.
-                    const normalizarParaSplit = (s: string) => (s || '').replace(/<br\s*\/?>/gi, '\n').replace(/<BR\s*\/?>/gi, '\n')
-                    const competenciasArray = competencia ? normalizarParaSplit(competencia).split(/[•\n]+/).map((c: string) => c.trim()).filter((c: string) => c && c.length > 2) : []
-                    const capacidadesArray = capacidades ? normalizarParaSplit(capacidades).split(/[•\n]+/).map((c: string) => c.trim()).filter((c: string) => c && c.length > 2) : []
-                    const desempeniosArray = desempenios ? normalizarParaSplit(desempenios).split(/[•\n]+/).map((d: string) => d.trim()).filter((d: string) => d && d.length > 2) : []
-                    
-                    sesionesGeneradasPorIA.push({
-                      titulo: titulo || '',
-                      campoTematico: campoTematico || '',
-                      competenciasSeleccionadas: competenciasArray,
-                      capacidadesSeleccionadas: capacidadesArray,
-                      desempeniosSeleccionados: desempeniosArray,
-                      evidencias: evidencias || '',
-                      criterios: criterios || '',
-                      instrumentoEvaluacion: instrumentoEvaluacion || ''
-                    })
-                  }
+                for (let i = 0; i < filas.length; i++) {
+                  const filaSinPrimeraYUltima = columnasDatosDeFila(filas[i])
+                  if (!filaSinPrimeraYUltima) continue
+
+                  if (esFilaEncabezadoTablaDidactica(filaSinPrimeraYUltima)) continue
+                  const lineaSeparador = filaSinPrimeraYUltima
+                    .join(' ')
+                    .replace(/\s/g, '')
+                  if (/^[-:|]+$/.test(lineaSeparador)) continue
+
+                  const tituloRaw = (filaSinPrimeraYUltima[0] || '').trim()
+                  const titulo = limpiarTituloSesion(tituloRaw)
+
+                  if (!titulo || titulo.length < 3) continue
+
+                  const campoTematico = limpiarBrCelda(filaSinPrimeraYUltima[1] || '')
+                  const competencia = filaSinPrimeraYUltima[2] || ''
+                  const capacidades = filaSinPrimeraYUltima[3] || ''
+                  const desempenios = filaSinPrimeraYUltima[4] || ''
+                  const evidencias = limpiarBrCelda(filaSinPrimeraYUltima[5] || '')
+                  const criterios = limpiarBrCelda(filaSinPrimeraYUltima[6] || '')
+                  const instrumentoEvaluacion = limpiarBrCelda(filaSinPrimeraYUltima[7] || '')
+
+                  const normalizarParaSplit = (s: string) => limpiarBrCelda(s)
+                  const competenciasArray = competencia
+                    ? normalizarParaSplit(competencia)
+                        .split(/[•\n]+/)
+                        .map((c: string) => c.trim())
+                        .filter((c: string) => c && c.length > 2)
+                    : []
+                  const capacidadesArray = capacidades
+                    ? normalizarParaSplit(capacidades)
+                        .split(/[•\n]+/)
+                        .map((c: string) => c.trim())
+                        .filter((c: string) => c && c.length > 2)
+                    : []
+                  const desempeniosArray = desempenios
+                    ? normalizarParaSplit(desempenios)
+                        .split(/[•\n]+/)
+                        .map((d: string) => d.trim())
+                        .filter((d: string) => d && d.length > 2)
+                    : []
+
+                  sesionesGeneradasPorIA.push({
+                    titulo,
+                    campoTematico: campoTematico || '',
+                    competenciasSeleccionadas: competenciasArray,
+                    capacidadesSeleccionadas: capacidadesArray,
+                    desempeniosSeleccionados: desempeniosArray,
+                    evidencias: evidencias || '',
+                    criterios: criterios || '',
+                    instrumentoEvaluacion: instrumentoEvaluacion || ''
+                  })
                 }
               }
-              
-              // Solo procesar tablas, eliminar todo el texto fuera de las tablas
-              for (let i = 0; i < lineas.length; i++) {
-                const linea = lineas[i]
-                const lineaTrim = linea.trim()
-                
-                // Si la línea está vacía
-                if (lineaTrim === '') {
-                  // Si hay un bloque acumulado, procesarlo SOLO si es una tabla
-                  if (bloqueActual.length > 0) {
-                    const tablaInfo = parsearTabla(bloqueActual)
-                    
-                    if (tablaInfo.esTabla && tablaInfo.filas && tablaInfo.numColumnas) {
-                      // Extraer datos de sesiones antes de convertir a XML
-                      extraerDatosSesiones(tablaInfo.filas)
-                      // Crear tabla de Word
-                      const tablaXML = convertirTablaAWordXML(tablaInfo.filas, tablaInfo.numColumnas)
+
+              const procesarRespuestaGptTabla = (
+                gptResponse: string,
+                opts?: { soloSesiones?: boolean }
+              ) => {
+                const lineas = gptResponse.split('\n')
+                let bloqueActual: string[] = []
+                const flushBloque = () => {
+                  if (bloqueActual.length === 0) return
+                  const tablaInfo = parsearTabla(bloqueActual)
+                  if (tablaInfo.esTabla && tablaInfo.filas && tablaInfo.numColumnas) {
+                    extraerDatosSesiones(tablaInfo.filas)
+                    if (!opts?.soloSesiones) {
+                      const tablaXML = convertirTablaAWordXML(
+                        tablaInfo.filas,
+                        tablaInfo.numColumnas
+                      )
                       tablaDidacticaXML += tablaXML
                     }
-                    // Si no es tabla, NO agregar nada (eliminar el texto)
-                    bloqueActual = []
                   }
-                } 
-                // Si la línea tiene contenido
-                else {
-                  // Detectar si podría ser parte de una tabla (tiene pipes)
-                  const tienePipes = linea.includes('|')
-                  
-                  // Si tiene pipes, agregar al bloque actual
-                  if (tienePipes) {
+                  bloqueActual = []
+                }
+                for (let i = 0; i < lineas.length; i++) {
+                  const linea = lineas[i]
+                  const lineaTrim = linea.trim()
+                  if (lineaTrim === '') {
+                    flushBloque()
+                  } else if (
+                    linea.includes('|') ||
+                    (linea.includes('\t') && linea.split('\t').length >= 3)
+                  ) {
                     bloqueActual.push(linea)
-                  } else {
-                    // Si hay un bloque con tablas, procesarlo primero
-                    if (bloqueActual.length > 0) {
-                      const tablaInfo = parsearTabla(bloqueActual)
-                      
-                      if (tablaInfo.esTabla && tablaInfo.filas && tablaInfo.numColumnas) {
-                        // Extraer datos de sesiones antes de convertir a XML
-                        extraerDatosSesiones(tablaInfo.filas)
-                        const tablaXML = convertirTablaAWordXML(tablaInfo.filas, tablaInfo.numColumnas)
-                        tablaDidacticaXML += tablaXML
-                      }
-                      // Si no es tabla, NO agregar nada (eliminar el texto)
-                      bloqueActual = []
-                    }
-                    // Si la línea no tiene pipes, NO agregar nada (eliminar el texto)
+                  } else if (bloqueActual.length > 0) {
+                    flushBloque()
                   }
+                }
+                flushBloque()
+              }
+
+              const llamarGptTabla = async (promptContenido: string, tokens: number) => {
+                const controller = new AbortController()
+                const timeoutId = setTimeout(() => controller.abort(), OPENAI_TIMEOUT_MS)
+                try {
+                  const res = await fetch('https://api.openai.com/v1/chat/completions', {
+                    method: 'POST',
+                    headers: {
+                      'Content-Type': 'application/json',
+                      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`
+                    },
+                    body: JSON.stringify({
+                      model: MODELO_GPT,
+                      messages: [{ role: 'user', content: promptContenido }],
+                      top_p: 1,
+                      max_completion_tokens: tokens,
+                      reasoning_effort: 'low'
+                    }),
+                    signal: controller.signal
+                  })
+                  clearTimeout(timeoutId)
+                  if (!res.ok) {
+                    const errorData = await res.json().catch(() => ({}))
+                    throw new Error(
+                      errorData.error?.message || res.statusText || 'Error OpenAI'
+                    )
+                  }
+                  const data = await res.json()
+                  const texto = (data.choices?.[0]?.message?.content as string) || ''
+                  if (!texto.trim()) {
+                    console.warn(
+                      '[unidad] gpt-5-mini devolvió content vacío (posible reasoning sin salida). finish_reason=',
+                      data.choices?.[0]?.finish_reason,
+                      'usage=',
+                      data.usage
+                    )
+                  }
+                  return texto
+                } catch (e) {
+                  clearTimeout(timeoutId)
+                  throw e
                 }
               }
-              
-              // Procesar el último bloque si queda (SOLO si es tabla)
-              if (bloqueActual.length > 0) {
-                const tablaInfo = parsearTabla(bloqueActual)
-                
-                if (tablaInfo.esTabla && tablaInfo.filas && tablaInfo.numColumnas) {
-                  // Extraer datos de sesiones antes de convertir a XML
-                  extraerDatosSesiones(tablaInfo.filas)
-                  const tablaXML = convertirTablaAWordXML(tablaInfo.filas, tablaInfo.numColumnas)
-                  tablaDidacticaXML += tablaXML
+
+              procesarRespuestaGptTabla(gptResponse)
+
+              if (
+                totalSesionesPrompt > 0 &&
+                sesionesGeneradasPorIA.length < totalSesionesPrompt
+              ) {
+                console.warn(
+                  `[unidad] Tabla con ${sesionesGeneradasPorIA.length}/${totalSesionesPrompt} sesiones; reintentando…`
+                )
+                const backupSesiones = [...sesionesGeneradasPorIA]
+                const backupXml = tablaDidacticaXML
+                tablaDidacticaXML = ''
+                sesionesGeneradasPorIA = []
+                const promptRetry =
+                  promptText +
+                  `\n\nCRÍTICO: Debes generar EXACTAMENTE ${totalSesionesPrompt} filas de sesión en la tabla (Sesión 1 a Sesión ${totalSesionesPrompt}). La respuesta anterior fue incompleta.`
+                try {
+                  const respRetry = await llamarGptTabla(
+                    promptRetry,
+                    MAX_TOKENS_SALIDA_TABLA
+                  )
+                  if (respRetry) {
+                    respuestaIaTablaTexto = agregarTextoRespuestaIa(respuestaIaTablaTexto, respRetry)
+                    procesarRespuestaGptTabla(respRetry)
+                  }
+                  if (sesionesGeneradasPorIA.length < backupSesiones.length) {
+                    sesionesGeneradasPorIA = backupSesiones
+                    tablaDidacticaXML = backupXml
+                  }
+                } catch (e) {
+                  sesionesGeneradasPorIA = backupSesiones
+                  tablaDidacticaXML = backupXml
+                  console.warn('[unidad] Reintento de tabla didáctica falló:', e)
                 }
-                // Si no es tabla, NO agregar nada (eliminar el texto)
+              }
+
+              let intentosComplemento = 0
+              while (
+                totalSesionesPrompt > 0 &&
+                sesionesGeneradasPorIA.length < totalSesionesPrompt &&
+                sesionesGeneradasPorIA.length > 0 &&
+                intentosComplemento < 2
+              ) {
+                intentosComplemento++
+                const desde = sesionesGeneradasPorIA.length + 1
+                const faltantes = totalSesionesPrompt - sesionesGeneradasPorIA.length
+                const promptSup =
+                  `Completa la tabla didáctica generando EXACTAMENTE ${faltantes} fila(s): Sesión ${desde} hasta Sesión ${totalSesionesPrompt}.\n` +
+                  `Área: ${formData.area || ''}, Grado: ${formData.grado || ''}, Producto: ${formData.producto || ''}.\n` +
+                  `Formato: tabla markdown con pipes. Cada fila con 8 columnas: título | campo temático | competencia | capacidades | desempeños | evidencias | criterios | instrumento.\n` +
+                  `NO repitas sesiones anteriores. SOLO sesiones ${desde}–${totalSesionesPrompt}.\n`
+                const prevLen = sesionesGeneradasPorIA.length
+                try {
+                  const respSup = await llamarGptTabla(
+                    promptSup,
+                    faltantes >= 3
+                      ? MAX_TOKENS_SALIDA_TABLA
+                      : Math.min(
+                          MAX_TOKENS_SALIDA_TABLA,
+                          Math.max(6000, 2000 + faltantes * 1200)
+                        )
+                  )
+                  if (respSup) {
+                    respuestaIaTablaTexto = agregarTextoRespuestaIa(respuestaIaTablaTexto, respSup)
+                    procesarRespuestaGptTabla(respSup, { soloSesiones: true })
+                  }
+                } catch (e) {
+                  console.warn('[unidad] Complemento de sesiones falló:', e)
+                  break
+                }
+                if (sesionesGeneradasPorIA.length === prevLen) break
+                if (sesionesGeneradasPorIA.length > totalSesionesPrompt) {
+                  sesionesGeneradasPorIA = sesionesGeneradasPorIA.slice(
+                    0,
+                    totalSesionesPrompt
+                  )
+                }
+              }
+
+              sesionesGeneradasPorIA = filtrarSesionesTablaValidas(
+                sesionesGeneradasPorIA
+              )
+
+              if (sesionesGeneradasPorIA.length > 0) {
+                tablaDidacticaXML = generarTablaDesdeSesionesGuardadas(
+                  sesionesGeneradasPorIA
+                )
               }
             }
           }
           }
         } catch (error) {
-          // Si hay error al generar con IA, continuar sin tabla didáctica
+          console.error('[unidad] Error al generar tabla didáctica con IA:', error)
+        }
+      }
+
+      if (!usarSesionesGuardadas) {
+        const totalSesionesRequeridas = resolverNumeroSesionesForm(formData)
+        if (
+          totalSesionesRequeridas > 0 &&
+          sesionesGeneradasPorIA.length < totalSesionesRequeridas
+        ) {
+          return NextResponse.json(
+            {
+              error: `Solo se generaron ${sesionesGeneradasPorIA.length} de ${totalSesionesRequeridas} sesiones. Pulsa «Regenerar con IA» para intentarlo de nuevo.`,
+              code: 'SESIONES_INCOMPLETAS'
+            },
+            { status: 422 }
+          )
         }
       }
       
@@ -2647,12 +3071,27 @@ export async function POST(request: NextRequest) {
           const sesionesParaGuardar = sesionesRaw && Array.isArray(sesionesRaw)
             ? sesionesRaw.map((s: any) => ({
                 ...s,
+                titulo: limpiarTituloSesion(String(s.titulo || '')),
+                campoTematico: limpiarBrCelda(String(s.campoTematico || '')),
+                evidencias: limpiarBrCelda(String(s.evidencias || '')),
+                criterios: limpiarBrCelda(String(s.criterios || '')),
+                instrumentoEvaluacion: limpiarBrCelda(
+                  String(s.instrumentoEvaluacion || '')
+                ),
                 competenciasSeleccionadas: repararListaCortadaPorComa(s.competenciasSeleccionadas || []),
                 capacidadesSeleccionadas: repararListaCortadaPorComa(s.capacidadesSeleccionadas || []),
                 desempeniosSeleccionados: repararListaCortadaPorComa(s.desempeniosSeleccionados || [])
               }))
             : null
-          
+
+          const totalSesionesSolicitado = resolverNumeroSesionesForm(formData)
+          let sesionesFinales = sesionesParaGuardar
+          if (sesionesFinales && totalSesionesSolicitado > 0) {
+            if (sesionesFinales.length > totalSesionesSolicitado) {
+              sesionesFinales = sesionesFinales.slice(0, totalSesionesSolicitado)
+            }
+          }
+
           // Preparar competencias y estándares para guardar como JSON
           // competenciasArray contiene: { competencianro, competenciadescripcion, estandares }
           const competenciasYEstándares = competenciasArray.length > 0 
@@ -2688,7 +3127,7 @@ export async function POST(request: NextRequest) {
             campoTematico: formData.campoTematico || null,
             numeroSesiones: formData.numeroSesiones || null,
             instrumentoEvaluacion: formData.instrumentoEvaluacion || null,
-            ...(sesionesParaGuardar !== null && { sesiones: sesionesParaGuardar }),
+            ...(sesionesFinales !== null && sesionesFinales.length > 0 && { sesiones: sesionesFinales }),
             enfoquesTransversales: enfoquesParaGuardar == null ? Prisma.JsonNull : enfoquesParaGuardar,
             variablesTemplate: {
               aiProvider: formData.aiProvider || 'openai',
@@ -2722,14 +3161,73 @@ export async function POST(request: NextRequest) {
         }
       }
 
-      // Devolver el archivo como respuesta
-      return new NextResponse(Buffer.from(buf), {
+      if (consumirTrialUnidad && !soloExportarUnidad) {
+        await marcarTrialConsumido(userId, 'unidad')
+      }
+      if (suscripcionRegenId != null) {
+        await consumirCreditoRegeneracion(suscripcionRegenId)
+      }
+
+      let entrega
+      try {
+        if (consumirTrialUnidad) {
+          console.log('🔒 Modo prueba: convirtiendo unidad de aprendizaje a PDF protegido...')
+        }
+        entrega = await prepararEntregaDocumento(
+          Buffer.from(buf),
+          fileName,
+          consumirTrialUnidad
+        )
+      } catch (pdfError) {
+        console.error('Error al generar PDF protegido (modo prueba, unidad):', pdfError)
+        return NextResponse.json(
+          { error: MSG_PDF_TRIAL_NO_DISPONIBLE, code: CODE_PDF_TRIAL_NO_DISPONIBLE },
+          { status: 503 }
+        )
+      }
+
+      if (incluirArchivosJson) {
+        const partesRespuesta: string[] = []
+        if (respuestaIaEnfoquesTexto?.trim()) {
+          partesRespuesta.push(
+            '--- ENFOQUES TRANSVERSALES (respuesta IA) ---\n\n' +
+              respuestaIaEnfoquesTexto.trim()
+          )
+        }
+        if (respuestaIaTablaTexto?.trim()) {
+          partesRespuesta.push(
+            '--- TABLA DIDÁCTICA / CAPÍTULO IV (respuesta IA) ---\n\n' +
+              respuestaIaTablaTexto.trim()
+          )
+        }
+
+        let respuestaIa: { fileName: string; docxBase64: string } | null = null
+        if (partesRespuesta.length > 0) {
+          const bufRespuesta = await construirWordDesdeRespuestaGpt(partesRespuesta.join('\n\n'))
+          respuestaIa = {
+            fileName: `RESPUESTA_IA_UNIDAD_${unidadNombre}_${areaNombre}_${gradoNombre}_${Date.now()}.docx`,
+            docxBase64: Buffer.from(bufRespuesta).toString('base64')
+          }
+        }
+
+        return NextResponse.json({
+          documento: {
+            fileName: entrega.fileName,
+            contentType: entrega.contentType,
+            base64: entrega.buffer.toString('base64')
+          },
+          respuestaIa
+        })
+      }
+
+      return new NextResponse(entrega.buffer as any, {
         status: 200,
         headers: {
-          'Content-Type': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-          'Content-Disposition': `attachment; filename="${encodeURIComponent(fileName)}"`,
-          'Content-Length': buf.length.toString(),
-        },
+          'Content-Type': entrega.contentType,
+          'Content-Disposition': `attachment; filename="${encodeURIComponent(entrega.fileName)}"`,
+          'Content-Length': entrega.buffer.length.toString(),
+          ...entrega.extraHeaders
+        }
       })
     } catch (error: any) {
       let errorMessage = 'Error al procesar la plantilla Word'

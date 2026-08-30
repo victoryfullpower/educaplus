@@ -1,7 +1,8 @@
 'use client'
 
-import { useState, useEffect, Suspense } from 'react'
+import { useState, useEffect, useMemo, Suspense } from 'react'
 import { useSearchParams, useRouter } from 'next/navigation'
+import Link from 'next/link'
 import Header from '@/components/Header'
 import { getDepartamentos, getProvinciasByDepartamento, getDistritosByProvincia } from '@/lib/ubigeos'
 import {
@@ -11,6 +12,16 @@ import {
   type ModalReturnState
 } from '@/lib/plan-modal-return'
 import { linkHomeConAreaTab } from '@/lib/plan-area-tab'
+import { errorDesdeResponse } from '@/lib/error-generacion-documento'
+import { useAvisoModal } from '@/hooks/useAvisoModal'
+import {
+  MAX_UNIDAD_INDEX_TRIAL_PLAN,
+  payloadUnidadPlanVacia,
+  tieneSuscripcionActivaParaGrado,
+  unidadPlanTieneConfiguracion,
+  type SuscripcionActivaCliente
+} from '@/lib/acceso-cliente'
+import { MSG_TRIAL_UNA_UNIDAD_PLAN, RUTA_PLANES_PAGO } from '@/lib/error-generacion-documento'
 import styles from './programacion-anual.module.css'
 
 interface Area {
@@ -26,6 +37,70 @@ interface Grado {
 interface Nivel {
   id: number
   descripcion: string
+}
+
+function findNivelSecundaria(niveles: Nivel[]): Nivel | undefined {
+  return niveles.find((n) => (n.descripcion || '').toLowerCase().includes('secundaria'))
+}
+
+function camposNivelSecundaria(
+  niveles: Nivel[]
+): { nivel: string; nivelId: string } | null {
+  const nivelSecundaria = findNivelSecundaria(niveles)
+  if (!nivelSecundaria) return null
+  return {
+    nivel: nivelSecundaria.descripcion || 'secundaria',
+    nivelId: String(nivelSecundaria.id)
+  }
+}
+
+type CampoFase1 = 'areaId' | 'gradoId' | 'departamento' | 'provincia' | 'distrito'
+type ErroresFase1 = Partial<Record<CampoFase1, string>>
+
+const ID_CAMPO_FASE1: Record<CampoFase1, string> = {
+  areaId: 'area',
+  gradoId: 'grado',
+  departamento: 'departamento',
+  provincia: 'provincia',
+  distrito: 'distrito'
+}
+
+const ORDEN_CAMPOS_FASE1: CampoFase1[] = [
+  'areaId',
+  'gradoId',
+  'departamento',
+  'provincia',
+  'distrito'
+]
+
+function validarFase1(
+  data: {
+    areaId: string
+    gradoId: string
+    departamento: string
+    provincia: string
+    distrito: string
+  },
+  soloLectura: boolean
+): ErroresFase1 {
+  const errores: ErroresFase1 = {}
+  if (!data.areaId) errores.areaId = 'Selecciona un área curricular.'
+  if (!data.gradoId) errores.gradoId = 'Selecciona un grado.'
+  if (!soloLectura) {
+    if (!data.departamento.trim()) errores.departamento = 'Selecciona un departamento.'
+    if (!data.provincia.trim()) errores.provincia = 'Selecciona una provincia.'
+    if (!data.distrito.trim()) errores.distrito = 'Selecciona un distrito.'
+  }
+  return errores
+}
+
+function MensajeCampo({ mensaje }: { mensaje?: string }) {
+  if (!mensaje) return null
+  return (
+    <p className={styles.fieldError} role="alert">
+      {mensaje}
+    </p>
+  )
 }
 
 interface Competencia {
@@ -54,13 +129,63 @@ interface Unidad {
   problemaPotencialidad: string
   producto: string
   tieneTituloIA: boolean
+  tieneSituacionIA: boolean
   tituloUnidad: string
+  situacionSignificativa: string
+  campoTematico: string
   competenciaSeleccionada: string  // Para compatibilidad con backend (primera competencia)
   capacidadSeleccionada: string     // Para compatibilidad con backend (primera capacidad)
   competenciasSeleccionadas: string[]  // Array de todas las competencias seleccionadas
   capacidadesSeleccionadas: string[]   // Array de todas las capacidades seleccionadas
   desempeniosSeleccionados: string[]
   conocimientos: string
+}
+
+const MIN_CAMPOS_TEMATICOS = 5
+
+const EJEMPLO_CAMPO_TEMATICO = `- Salud sexual y reproductiva
+- Prevención del embarazo adolescente
+- Derechos de las y los adolescentes
+- Comunicación asertiva en la familia
+- Uso responsable de herramientas digitales`
+
+/** Extrae ítems de líneas con guion (-, • o *). */
+function extraerItemsCampoTematico(texto: string): string[] {
+  return String(texto || '')
+    .split(/\n+/)
+    .map((line) => line.replace(/^\s*[-•*]\s*/, '').trim())
+    .filter(Boolean)
+}
+
+function contarGuionesCampoTematico(texto: string): number {
+  return String(texto || '')
+    .split(/\n+/)
+    .filter((line) => /^\s*[-•*]\s+\S/.test(line))
+    .length
+}
+
+function campoTematicoEsValido(texto: string): boolean {
+  return contarGuionesCampoTematico(texto) >= MIN_CAMPOS_TEMATICOS
+}
+
+function formatearCamposTematicos(items: string[]): string {
+  return items
+    .map((t) => t.trim())
+    .filter(Boolean)
+    .map((t) => `- ${t}`)
+    .join('\n')
+}
+
+function textoCampoTematicoDesdeGuardado(
+  unidad: { camposTematicos?: string[]; campoTematico?: string }
+): string {
+  if (typeof unidad.campoTematico === 'string' && unidad.campoTematico.trim()) {
+    return unidad.campoTematico
+  }
+  if (Array.isArray(unidad.camposTematicos) && unidad.camposTematicos.length > 0) {
+    return formatearCamposTematicos(unidad.camposTematicos)
+  }
+  return ''
 }
 
 type ErrorParProblemaProducto = { problema?: boolean; producto?: boolean }
@@ -81,6 +206,9 @@ function erroresParProblemaProducto(
 
 function ProgramacionAnualContent() {
   const router = useRouter()
+  const { manejarErrorGeneracion, mostrarAviso, AvisoModalEl } = useAvisoModal(
+    'EducaPlus · Programación anual'
+  )
   const searchParams = useSearchParams()
   const planIdParam = searchParams.get('planId')
   
@@ -187,9 +315,10 @@ function ProgramacionAnualContent() {
         setGrados(gradosData)
         setNiveles(nivelesData)
 
-        // No establecer valores por defecto - todo debe venir de la BD o estar vacío
-        // Si hay plan existente, los datos ya se cargaron arriba
-        // Si no hay plan existente, todo queda vacío para que el usuario lo llene
+        const nivelSecundaria = camposNivelSecundaria(nivelesData as Nivel[])
+        if (nivelSecundaria) {
+          setFormData((prev) => ({ ...prev, ...nivelSecundaria }))
+        }
       } catch (error) {
         console.error('Error al cargar datos iniciales:', error)
       } finally {
@@ -199,6 +328,33 @@ function ProgramacionAnualContent() {
 
     loadInitialData()
   }, [planIdParam])
+
+  useEffect(() => {
+    const cargarAcceso = async () => {
+      try {
+        const res = await fetch('/api/usuario/acceso')
+        if (!res.ok) return
+        const data = await res.json()
+        if (data.suscripcionActiva) {
+          setSuscripcionActiva(data.suscripcionActiva)
+        }
+        if (data.cuotaPlanAnual) {
+          setCuotaPlanAnual(data.cuotaPlanAnual)
+        }
+      } catch {
+        /* sin sesión o error de red */
+      }
+    }
+    cargarAcceso()
+  }, [])
+
+  useEffect(() => {
+    const nivelSecundaria = camposNivelSecundaria(niveles)
+    if (!nivelSecundaria) return
+    setFormData((prev) =>
+      prev.nivelId === nivelSecundaria.nivelId ? prev : { ...prev, ...nivelSecundaria }
+    )
+  }, [niveles])
 
   // Cargar competencias cuando cambien área, grado o nivel
   useEffect(() => {
@@ -231,15 +387,34 @@ function ProgramacionAnualContent() {
     desempeniosSeleccionados: []
   })
 
-  /** Con problema + producto: todas las competencias; si falta uno: se limpian */
+  /** Opción 1 o 2: si cumple campos requeridos → todas las competencias del área; si no → se limpian */
+  const unidadCumpleCamposParaCompetencias = (
+    unidad: Unidad,
+    esOpcion1: boolean
+  ): boolean => {
+    const tieneProducto = !!unidad.producto?.trim()
+    const tieneCampoTematico = campoTematicoEsValido(unidad.campoTematico || '')
+    if (esOpcion1) {
+      return (
+        !!unidad.tituloUnidad?.trim() &&
+        !!unidad.situacionSignificativa?.trim() &&
+        tieneProducto &&
+        tieneCampoTematico
+      )
+    }
+    return (
+      !!unidad.problemaPotencialidad?.trim() &&
+      tieneProducto &&
+      tieneCampoTematico
+    )
+  }
+
   const autoSeleccionarCompetenciasEnUnidad = (
     unidad: Unidad,
-    listaCompetencias: Competencia[]
+    listaCompetencias: Competencia[],
+    esOpcion1: boolean
   ): Unidad => {
-    const tieneProblema = !!unidad.problemaPotencialidad?.trim()
-    const tieneProducto = !!unidad.producto?.trim()
-
-    if (!tieneProblema || !tieneProducto) {
+    if (!unidadCumpleCamposParaCompetencias(unidad, esOpcion1)) {
       const yaVacias =
         !unidad.competenciaSeleccionada &&
         (unidad.competenciasSeleccionadas?.length ?? 0) === 0 &&
@@ -269,7 +444,10 @@ function ProgramacionAnualContent() {
     problemaPotencialidad: '',
     producto: '',
     tieneTituloIA: true,  // Por defecto la IA genera el título
+    tieneSituacionIA: true, // Por defecto la IA genera la situación significativa
     tituloUnidad: '',
+    situacionSignificativa: '',
+    campoTematico: '',
     competenciaSeleccionada: '',  // Primera competencia para compatibilidad
     capacidadSeleccionada: '',     // Primera capacidad para compatibilidad
     competenciasSeleccionadas: [], // Array de todas las competencias
@@ -277,7 +455,14 @@ function ProgramacionAnualContent() {
     desempeniosSeleccionados: [],
     conocimientos: ''
   })))
-  
+
+  // Modo de ingreso Fase 2: null = sin elegir; completo = manual; con_ia = IA genera título/situación
+  type ModoIngresoPlan = 'completo' | 'con_ia'
+  const [modoIngresoPlan, setModoIngresoPlan] = useState<ModoIngresoPlan | null>(null)
+  const docenteCompleto = modoIngresoPlan === 'completo'
+  const generarTituloConIA = modoIngresoPlan !== 'completo'
+  const generarSituacionConIA = modoIngresoPlan !== 'completo'
+
   // Estados para capacidades y desempeños por unidad
   const [capacidadesPorUnidad, setCapacidadesPorUnidad] = useState<{ [key: number]: Capacidad[] }>({})
   const [desempeniosPorUnidad, setDesempeniosPorUnidad] = useState<{ [key: number]: Desempenio[] }>({})
@@ -341,45 +526,111 @@ function ProgramacionAnualContent() {
   const [desempeniosModal, setDesempeniosModal] = useState<Desempenio[]>([])
   const [loadingCapacidadesModal, setLoadingCapacidadesModal] = useState(false)
   const [loadingDesempeniosModal, setLoadingDesempeniosModal] = useState(false)
+
+  // Modal de sugerencias (problema / producto)
+  type TipoSugerenciaPlan = 'problema' | 'producto'
+  const [showModalSugerencias, setShowModalSugerencias] = useState(false)
+  const [tipoSugerencia, setTipoSugerencia] = useState<TipoSugerenciaPlan | null>(null)
+  const [unidadSugerenciaIndex, setUnidadSugerenciaIndex] = useState<number | null>(null)
+  const [sugerenciasLista, setSugerenciasLista] = useState<{ id: number; descripcion: string }[]>([])
+  const [loadingSugerencias, setLoadingSugerencias] = useState(false)
+
   const [erroresParUnidad, setErroresParUnidad] = useState<
     Record<number, ErrorParProblemaProducto>
   >({})
+  const [erroresFase1, setErroresFase1] = useState<ErroresFase1>({})
+  const [suscripcionActiva, setSuscripcionActiva] = useState<SuscripcionActivaCliente>(null)
+  const [cuotaPlanAnual, setCuotaPlanAnual] = useState<{
+    limite: number | null
+    usados: number
+    restantes: number | null
+    puedeCrear: boolean
+    mensaje: string | null
+  } | null>(null)
+
+  const bloqueadoPorCuota = !esEdicionPlan && cuotaPlanAnual?.puedeCrear === false
+
+  const accesoTodasUnidades = useMemo(
+    () => tieneSuscripcionActivaParaGrado(suscripcionActiva, formData.areaId, formData.gradoId),
+    [suscripcionActiva, formData.areaId, formData.gradoId]
+  )
+
+  const unidadBloqueadaTrial = (index: number) =>
+    index > MAX_UNIDAD_INDEX_TRIAL_PLAN && !accesoTodasUnidades
+
+  const unidadNoEditable = (index: number) =>
+    esUnidadRegistradaEnPlan(index) || unidadBloqueadaTrial(index)
+
+  const limpiarErrorFase1 = (campo: CampoFase1) => {
+    setErroresFase1((prev) => {
+      if (!prev[campo]) return prev
+      const next = { ...prev }
+      delete next[campo]
+      return next
+    })
+  }
+
+  const enfocarPrimerErrorFase1 = (errores: ErroresFase1) => {
+    const firstKey = ORDEN_CAMPOS_FASE1.find((k) => errores[k])
+    if (!firstKey) return
+    const el = document.getElementById(ID_CAMPO_FASE1[firstKey])
+    el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    if (el instanceof HTMLElement) el.focus()
+  }
 
   useEffect(() => {
-    if (competencias.length === 0) return
+    if (competencias.length === 0 || !modoIngresoPlan) return
     setUnidades((prev) => {
       let changed = false
       const next = prev.map((u, index) => {
         if (index === 0) return u
-        const updated = autoSeleccionarCompetenciasEnUnidad(u, competencias)
+        if (unidadBloqueadaTrial(index)) return u
+        const updated = autoSeleccionarCompetenciasEnUnidad(
+          u,
+          competencias,
+          modoIngresoPlan === 'completo'
+        )
         if (updated !== u) changed = true
         return updated
       })
       return changed ? next : prev
     })
-  }, [competencias])
+  }, [competencias, accesoTodasUnidades, modoIngresoPlan])
 
   const handleDepartamentoChange = (departamento: string) => {
-    setFormData({
-      ...formData,
+    setFormData((prev) => ({
+      ...prev,
       departamento,
-      provincia: '', // Limpiar provincia y distrito al cambiar departamento
+      provincia: '',
       distrito: ''
-    })
+    }))
     const provincias = getProvinciasByDepartamento(departamento)
     setProvinciasDisponibles(provincias)
     setDistritosDisponibles([])
+    setErroresFase1((prev) => {
+      const next = { ...prev }
+      delete next.departamento
+      delete next.provincia
+      delete next.distrito
+      return next
+    })
   }
 
   const handleProvinciaChange = (provincia: string) => {
-    setFormData(prev => {
+    setFormData((prev) => {
       const distritos = getDistritosByProvincia(prev.departamento, provincia)
       setDistritosDisponibles(distritos)
       return {
         ...prev,
         provincia,
-        distrito: '' // Limpiar distrito al cambiar provincia
+        distrito: ''
       }
+    })
+    setErroresFase1((prev) => {
+      const next = { ...prev }
+      delete next.provincia
+      delete next.distrito
+      return next
     })
   }
 
@@ -408,7 +659,17 @@ function ProgramacionAnualContent() {
         nuevasUnidades[index] = {
           ...nuevasUnidades[index],
           ...unidadExistente,
-          tieneTituloIA: true,
+          tieneTituloIA:
+            unidadExistente.tieneTituloIA !== undefined
+              ? unidadExistente.tieneTituloIA
+              : true,
+          tieneSituacionIA:
+            unidadExistente.tieneSituacionIA !== undefined
+              ? unidadExistente.tieneSituacionIA
+              : true,
+          tituloUnidad: unidadExistente.tituloUnidad || '',
+          situacionSignificativa: unidadExistente.situacionSignificativa || '',
+          campoTematico: textoCampoTematicoDesdeGuardado(unidadExistente),
           competenciasSeleccionadas: unidadExistente.competenciasSeleccionadas || [],
           capacidadesSeleccionadas: unidadExistente.capacidadesSeleccionadas || [],
           desempeniosSeleccionados: unidadExistente.desempeniosSeleccionados || []
@@ -450,6 +711,21 @@ function ProgramacionAnualContent() {
     setCapacidadesPorUnidad((prev) => ({ ...prev, ...nuevasCapacidadesPorUnidad }))
     setTodosLosDesempeniosPorUnidad((prev) => ({ ...prev, ...nuevosDesempeniosPorUnidad }))
     setDesempeniosPorUnidad((prev) => ({ ...prev, ...nuevosDesempeniosPorUnidad }))
+
+    // Sincronizar modo de ingreso con lo guardado en el plan
+    const unidadesConDatos = nuevasUnidades.filter(
+      (u, i) =>
+        i > 0 &&
+        (u.problemaPotencialidad?.trim() ||
+          u.producto?.trim() ||
+          (u.desempeniosSeleccionados?.length ?? 0) > 0)
+    )
+    if (unidadesConDatos.length > 0) {
+      const esCompleto = unidadesConDatos.every(
+        (u) => u.tieneTituloIA === false && u.tieneSituacionIA === false
+      )
+      setModoIngresoPlan(esCompleto ? 'completo' : 'con_ia')
+    }
   }
 
   useEffect(() => {
@@ -555,10 +831,25 @@ function ProgramacionAnualContent() {
 
   const handleFase1Submit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!formData.areaId || !formData.gradoId || !formData.nivelId) {
-      alert('Selecciona área, nivel y grado para continuar.')
+    if (bloqueadoPorCuota) {
+      mostrarAviso({
+        titulo: 'Límite alcanzado',
+        mensaje:
+          cuotaPlanAnual?.mensaje ??
+          'Has alcanzado el límite de programaciones anuales de tu plan.',
+        tipo: 'warn',
+        botonTexto: 'Ver planes',
+        onCloseRedirect: RUTA_PLANES_PAGO
+      })
       return
     }
+    const errores = validarFase1(formData, fase1SoloLectura)
+    if (Object.keys(errores).length > 0) {
+      setErroresFase1(errores)
+      enfocarPrimerErrorFase1(errores)
+      return
+    }
+    setErroresFase1({})
     if (planAnualExistente?.unidades) {
       await cargarUnidadesDesdePlan(planAnualExistente)
     }
@@ -585,8 +876,10 @@ function ProgramacionAnualContent() {
         ugel: planAnualExistente.ugel || prev.ugel,
         director: planAnualExistente.director || prev.director,
         coordinador: planAnualExistente.coordinador || prev.coordinador,
-        nivel: planAnualExistente.nivel || prev.nivel,
-        nivelId: planAnualExistente.nivelId || prev.nivelId,
+        ...(camposNivelSecundaria(niveles) ?? {
+          nivel: planAnualExistente.nivel || prev.nivel,
+          nivelId: planAnualExistente.nivelId || prev.nivelId
+        }),
         departamento: planAnualExistente.departamento || prev.departamento,
         provincia: planAnualExistente.provincia || prev.provincia,
         distrito: planAnualExistente.distrito || prev.distrito
@@ -674,8 +967,75 @@ function ProgramacionAnualContent() {
     await generarDocumento(modo)
   }
 
+  const aplicarModoIngresoPlan = (modo: ModoIngresoPlan) => {
+    setModoIngresoPlan(modo)
+    const conIA = modo === 'con_ia'
+    const esOpcion1 = modo === 'completo'
+    setUnidades((prev) =>
+      prev.map((u, index) => {
+        const conFlags = {
+          ...u,
+          tieneTituloIA: conIA,
+          tieneSituacionIA: conIA
+        }
+        if (index === 0 || unidadBloqueadaTrial(index) || competencias.length === 0) {
+          return conFlags
+        }
+        return autoSeleccionarCompetenciasEnUnidad(conFlags, competencias, esOpcion1)
+      })
+    )
+    setErroresParUnidad({})
+  }
+
+  const abrirModalSugerencias = async (index: number, tipo: TipoSugerenciaPlan) => {
+    if (unidadNoEditable(index)) return
+    setUnidadSugerenciaIndex(index)
+    setTipoSugerencia(tipo)
+    setShowModalSugerencias(true)
+    setLoadingSugerencias(true)
+    setSugerenciasLista([])
+    try {
+      let url =
+        tipo === 'problema'
+          ? '/api/admin/sugerencias-problema-plan'
+          : '/api/admin/sugerencias-producto-plan'
+      if (tipo === 'producto') {
+        if (!formData.areaId) {
+          setSugerenciasLista([])
+          setLoadingSugerencias(false)
+          return
+        }
+        url += `?idarea=${encodeURIComponent(String(formData.areaId))}`
+      }
+      const response = await fetch(url)
+      if (response.ok) {
+        const data = await response.json()
+        setSugerenciasLista(data.sugerencias || [])
+      }
+    } catch (error) {
+      console.error('Error al cargar sugerencias:', error)
+    } finally {
+      setLoadingSugerencias(false)
+    }
+  }
+
+  const cerrarModalSugerencias = () => {
+    setShowModalSugerencias(false)
+    setTipoSugerencia(null)
+    setUnidadSugerenciaIndex(null)
+    setSugerenciasLista([])
+  }
+
+  const seleccionarSugerencia = (descripcion: string) => {
+    if (unidadSugerenciaIndex === null || !tipoSugerencia) return
+    const campo: keyof Unidad =
+      tipoSugerencia === 'problema' ? 'problemaPotencialidad' : 'producto'
+    handleUnidadChange(unidadSugerenciaIndex, campo, descripcion)
+    cerrarModalSugerencias()
+  }
+
   const handleUnidadChange = (index: number, field: keyof Unidad, value: string | boolean | string[]) => {
-    if (esUnidadRegistradaEnPlan(index)) return
+    if (unidadNoEditable(index)) return
     setUnidades(prevUnidades => {
       const newUnidades = [...prevUnidades]
       const unidadActual = newUnidades[index]
@@ -710,15 +1070,30 @@ function ProgramacionAnualContent() {
       
       // Para otros campos, actualizar normalmente
       let actualizada: Unidad = { ...unidadActual, [field]: value }
+      const camposAutoCompetencias = [
+        'problemaPotencialidad',
+        'producto',
+        'tituloUnidad',
+        'situacionSignificativa',
+        'campoTematico'
+      ]
       if (
         index > 0 &&
-        (field === 'problemaPotencialidad' || field === 'producto') &&
+        modoIngresoPlan &&
+        camposAutoCompetencias.includes(field) &&
         typeof value === 'string'
       ) {
-        actualizada = autoSeleccionarCompetenciasEnUnidad(actualizada, competencias)
+        actualizada = autoSeleccionarCompetenciasEnUnidad(
+          actualizada,
+          competencias,
+          docenteCompleto
+        )
       }
       newUnidades[index] = actualizada
-      if (field === 'problemaPotencialidad' || field === 'producto') {
+      if (
+        docenteCompleto &&
+        (field === 'problemaPotencialidad' || field === 'producto')
+      ) {
         setErroresParUnidad((prev) => ({
           ...prev,
           [index]: erroresParProblemaProducto(
@@ -791,6 +1166,16 @@ function ProgramacionAnualContent() {
 
   // Funciones para el modal de competencias/desempeños
   const abrirModalCompetencias = async (index: number) => {
+    if (unidadBloqueadaTrial(index)) {
+      mostrarAviso({
+        titulo: 'Unidad no disponible en prueba',
+        mensaje: MSG_TRIAL_UNA_UNIDAD_PLAN,
+        tipo: 'warn',
+        botonTexto: 'Ver planes',
+        onCloseRedirect: RUTA_PLANES_PAGO
+      })
+      return
+    }
     if (esUnidadRegistradaEnPlan(index)) return
     const unidad = unidades[index]
     setUnidadModalIndex(index)
@@ -1075,7 +1460,7 @@ function ProgramacionAnualContent() {
 
   // Función para eliminar un desempeño específico
   const eliminarDesempenio = (unidadIndex: number, desempenioId: string) => {
-    if (esUnidadRegistradaEnPlan(unidadIndex)) return
+    if (unidadNoEditable(unidadIndex)) return
     const unidad = unidades[unidadIndex]
     if (!unidad) return
 
@@ -1125,47 +1510,95 @@ function ProgramacionAnualContent() {
   const handleFinalSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
 
+    if (!modoIngresoPlan) {
+      alert('⚠️ Primero elige la Opción 1 o la Opción 2 para continuar.')
+      return
+    }
+
     const nuevosErroresPar: Record<number, ErrorParProblemaProducto> = {}
-    let primerUnidadInvalida: number | null = null
-    let campoFaltante: 'problema' | 'producto' | null = null
+    setErroresParUnidad({})
 
     for (let index = 1; index < unidades.length; index++) {
       if (esUnidadRegistradaEnPlan(index)) continue
+      if (unidadBloqueadaTrial(index)) continue
       const u = unidades[index]
-      const err = erroresParProblemaProducto(u.problemaPotencialidad, u.producto)
-      if (err.problema || err.producto) {
-        nuevosErroresPar[index] = err
-        if (primerUnidadInvalida == null) {
-          primerUnidadInvalida = index
-          campoFaltante = err.producto ? 'producto' : 'problema'
+
+      if (docenteCompleto) {
+        // Opción 1: título, situación, campo temático y producto (sin problema)
+        const tieneContenido =
+          !!u.producto.trim() ||
+          !!u.tituloUnidad.trim() ||
+          !!u.situacionSignificativa.trim() ||
+          !!u.campoTematico.trim()
+        if (!tieneContenido) continue
+
+        if (!u.tituloUnidad.trim()) {
+          alert(`⚠️ En la UNIDAD ${index} debes ingresar el título.`)
+          document.getElementById(`titulo-${index}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+          return
+        }
+        if (!u.situacionSignificativa.trim()) {
+          alert(`⚠️ En la UNIDAD ${index} debes ingresar la situación significativa.`)
+          document
+            .getElementById(`situacion-${index}`)
+            ?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+          return
+        }
+        if (!u.producto.trim()) {
+          alert(`⚠️ En la UNIDAD ${index} debes ingresar el producto.`)
+          document.getElementById(`producto-${index}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+          return
+        }
+        if (!campoTematicoEsValido(u.campoTematico)) {
+          alert(
+            `⚠️ En la UNIDAD ${index} el campo temático debe tener al menos ${MIN_CAMPOS_TEMATICOS} líneas con guion (- ).\n\nEjemplo:\n${EJEMPLO_CAMPO_TEMATICO}`
+          )
+          document
+            .getElementById(`campo-tematico-${index}`)
+            ?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+          return
+        }
+      } else {
+        // Opción 2: IA genera título/situación. Exige problema, producto y campo temático.
+        const tieneContenido =
+          !!u.problemaPotencialidad.trim() || !!u.producto.trim()
+        if (!tieneContenido) continue
+
+        if (!u.problemaPotencialidad.trim()) {
+          alert(`⚠️ En la UNIDAD ${index} debes ingresar el problema o potencialidad.`)
+          document.getElementById(`problema-${index}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+          return
+        }
+        if (!u.producto.trim()) {
+          alert(`⚠️ En la UNIDAD ${index} debes ingresar el producto.`)
+          document.getElementById(`producto-${index}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+          return
+        }
+        if (!campoTematicoEsValido(u.campoTematico)) {
+          alert(
+            `⚠️ En la UNIDAD ${index} el campo temático debe tener al menos ${MIN_CAMPOS_TEMATICOS} líneas con guion (- ).\n\nEjemplo:\n${EJEMPLO_CAMPO_TEMATICO}`
+          )
+          document
+            .getElementById(`campo-tematico-${index}`)
+            ?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+          return
         }
       }
     }
 
-    setErroresParUnidad(nuevosErroresPar)
-
-    if (primerUnidadInvalida != null && campoFaltante) {
-      const etiquetaCampo =
-        campoFaltante === 'producto' ? 'Producto' : 'Problema o potencialidad'
-      alert(
-        `⚠️ En la UNIDAD ${primerUnidadInvalida}, si completas uno de los campos debes completar el otro.\n\nFalta: ${etiquetaCampo}.`
-      )
-      const anchorId =
-        campoFaltante === 'problema'
-          ? `problema-${primerUnidadInvalida}`
-          : `producto-${primerUnidadInvalida}`
-      document.getElementById(anchorId)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
-      return
-    }
-
-    const tieneCompetencia = unidades.slice(1).some(
-      (u) =>
-        !!u.competenciaSeleccionada ||
-        (u.competenciasSeleccionadas?.length ?? 0) > 0
-    )
-    if (!tieneCompetencia) {
-      alert('⚠️ Por favor, selecciona al menos una competencia en alguna unidad.')
-      return
+    if (!accesoTodasUnidades) {
+      for (let index = MAX_UNIDAD_INDEX_TRIAL_PLAN + 1; index < unidades.length; index++) {
+        if (unidadPlanTieneConfiguracion(unidades[index])) {
+          mostrarAviso({
+            titulo: 'Solo una unidad en prueba',
+            mensaje: MSG_TRIAL_UNA_UNIDAD_PLAN,
+            tipo: 'warn',
+            botonTexto: 'Ver planes',
+            onCloseRedirect: RUTA_PLANES_PAGO
+          })
+          return
+        }
+      }
     }
     
     const planExistente = await verificarPlanAnualExistente()
@@ -1201,18 +1634,41 @@ function ProgramacionAnualContent() {
       // IMPORTANTE: Enviar TODAS las 9 unidades preservando el índice original
       // El backend necesita que el índice del array coincida con el número de unidad (0-8)
       // Si una unidad no tiene datos, enviarla con valores vacíos pero en su posición correcta
-      const unidadesParaEnviar = unidades.map((unidad, index) => ({
-        problemaPotencialidad: unidad.problemaPotencialidad || '',
-        producto: unidad.producto || '',
-        tieneTituloIA: unidad.tieneTituloIA !== undefined ? unidad.tieneTituloIA : true,
-        tituloUnidad: unidad.tituloUnidad || '',
-        competenciaSeleccionada: unidad.competenciaSeleccionada || '',  // Para compatibilidad
-        competenciasSeleccionadas: unidad.competenciasSeleccionadas || (unidad.competenciaSeleccionada ? [unidad.competenciaSeleccionada] : []),  // Array de competencias
-        capacidadSeleccionada: unidad.capacidadSeleccionada || '',  // Para compatibilidad
-        capacidadesSeleccionadas: unidad.capacidadesSeleccionadas || (unidad.capacidadSeleccionada ? [unidad.capacidadSeleccionada] : []),  // Array de capacidades
-        desempeniosSeleccionados: unidad.desempeniosSeleccionados || [],
-        conocimientos: unidad.conocimientos || ''
-      }))
+      const unidadesParaEnviar = unidades.map((unidad, index) => {
+        if (!accesoTodasUnidades && index > MAX_UNIDAD_INDEX_TRIAL_PLAN) {
+          return payloadUnidadPlanVacia()
+        }
+        const conCompetencias =
+          index > 0 && modoIngresoPlan && competencias.length > 0
+            ? autoSeleccionarCompetenciasEnUnidad(unidad, competencias, docenteCompleto)
+            : unidad
+        return {
+          problemaPotencialidad: conCompetencias.problemaPotencialidad || '',
+          producto: conCompetencias.producto || '',
+          tieneTituloIA: conCompetencias.tieneTituloIA !== undefined ? conCompetencias.tieneTituloIA : generarTituloConIA,
+          tieneSituacionIA:
+            conCompetencias.tieneSituacionIA !== undefined ? conCompetencias.tieneSituacionIA : generarSituacionConIA,
+          tituloUnidad: conCompetencias.tituloUnidad || '',
+          situacionSignificativa: conCompetencias.situacionSignificativa || '',
+          camposTematicos: extraerItemsCampoTematico(conCompetencias.campoTematico || ''),
+          campoTematico: (() => {
+            const items = extraerItemsCampoTematico(conCompetencias.campoTematico || '')
+            return items.length > 0
+              ? formatearCamposTematicos(items)
+              : String(conCompetencias.campoTematico || '').trim()
+          })(),
+          competenciaSeleccionada: conCompetencias.competenciaSeleccionada || '',
+          competenciasSeleccionadas:
+            conCompetencias.competenciasSeleccionadas ||
+            (conCompetencias.competenciaSeleccionada ? [conCompetencias.competenciaSeleccionada] : []),
+          capacidadSeleccionada: conCompetencias.capacidadSeleccionada || '',
+          capacidadesSeleccionadas:
+            conCompetencias.capacidadesSeleccionadas ||
+            (conCompetencias.capacidadSeleccionada ? [conCompetencias.capacidadSeleccionada] : []),
+          desempeniosSeleccionados: conCompetencias.desempeniosSeleccionados || [],
+          conocimientos: unidad.conocimientos || ''
+        }
+      })
       
       console.log('📤 [FRONTEND] Enviando datos para generar programación anual...', {
         formData,
@@ -1336,8 +1792,7 @@ function ProgramacionAnualContent() {
       })
 
       if (!response.ok) {
-        const error = await response.json()
-        throw new Error(error.error || 'Error al generar el documento')
+        throw await errorDesdeResponse(response)
       }
 
       // Obtener el blob del documento
@@ -1391,13 +1846,7 @@ function ProgramacionAnualContent() {
       setShowModalGeneradoExito(true)
     } catch (error) {
       console.error('Error al generar programación anual:', error)
-      let errorMessage = 'Error al generar el documento'
-      
-      if (error instanceof Error) {
-        errorMessage = error.message
-      }
-      
-      alert(`❌ ERROR: ${errorMessage}`)
+      manejarErrorGeneracion(error)
     } finally {
       setLoading(false)
     }
@@ -1538,8 +1987,7 @@ function ProgramacionAnualContent() {
       })
 
       if (!response.ok) {
-        const error = await response.json()
-        throw new Error(error.error || 'Error al generar el documento')
+        throw await errorDesdeResponse(response)
       }
 
       // Obtener el blob del documento
@@ -1567,21 +2015,7 @@ function ProgramacionAnualContent() {
       document.body.removeChild(a)
     } catch (error) {
       console.error('Error al descargar:', error)
-      let errorMessage = 'Error al generar el documento'
-      
-      if (error instanceof Error) {
-        errorMessage = error.message
-        
-        // Si hay detalles adicionales en el mensaje, mostrarlos
-        if (error.message.includes('SOLUCIÓN:')) {
-          // Mostrar un alert más detallado
-          alert(errorMessage)
-        } else {
-          alert(errorMessage)
-        }
-      } else {
-        alert(errorMessage)
-      }
+      manejarErrorGeneracion(error)
     } finally {
       setDownloading(false)
     }
@@ -1623,11 +2057,39 @@ function ProgramacionAnualContent() {
           </div>
 
           {fase === 1 && (
-            <form onSubmit={handleFase1Submit} className={styles.form}>
+            <form onSubmit={handleFase1Submit} className={styles.form} noValidate>
               <h2 className={styles.phaseTitle}>FASE 1: Selección Personalizada</h2>
               <p className={styles.phaseDescription}>
                 Define el contexto educativo para que la IA genere una planificación alineada a tu realidad.
               </p>
+
+              {bloqueadoPorCuota && (
+                <div className={styles.trialUnidadesBanner} role="alert">
+                  <span className={styles.trialUnidadesBannerIcon} aria-hidden>
+                    !
+                  </span>
+                  <div className={styles.trialUnidadesBannerText}>
+                    <strong>Límite de tu plan alcanzado</strong>{' '}
+                    {cuotaPlanAnual?.mensaje}{' '}
+                    <Link href={RUTA_PLANES_PAGO} className={styles.trialUnidadesLink}>
+                      Ver planes
+                    </Link>
+                  </div>
+                </div>
+              )}
+
+              {Object.keys(erroresFase1).length > 0 && (
+                <div className={styles.validationBanner} role="alert">
+                  <span className={styles.validationBannerIcon} aria-hidden>
+                    !
+                  </span>
+                  <div className={styles.validationBannerText}>
+                    <strong>Faltan datos obligatorios</strong>
+                    Revisa los campos marcados en rojo antes de continuar a la Fase 2.
+                  </div>
+                </div>
+              )}
+
               <div className={styles.formGrid}>
                 <div className={styles.formGroup}>
                   <label htmlFor="area">Área <span className={styles.required}>*</span></label>
@@ -1641,16 +2103,19 @@ function ProgramacionAnualContent() {
                         area: selectedArea?.descripcion || '', 
                         areaId: e.target.value 
                       })
+                      limpiarErrorFase1('areaId')
                     }}
-                    className={styles.select}
-                    required
+                    className={`${styles.select} ${erroresFase1.areaId ? styles.fieldInvalid : ''}`}
                     disabled={fase1SoloLectura}
+                    aria-invalid={erroresFase1.areaId ? true : undefined}
+                    aria-describedby={erroresFase1.areaId ? 'area-error' : undefined}
                   >
                     <option value="">Selecciona un área</option>
                     {areas.map(area => (
                       <option key={area.id} value={area.id}>{area.descripcion}</option>
                     ))}
                   </select>
+                  <MensajeCampo mensaje={erroresFase1.areaId} />
                 </div>
 
                 <div className={styles.formGroup}>
@@ -1665,10 +2130,11 @@ function ProgramacionAnualContent() {
                         grado: selectedGrado?.descripcion || '', 
                         gradoId: e.target.value 
                       })
+                      limpiarErrorFase1('gradoId')
                     }}
-                    className={styles.select}
-                    required
+                    className={`${styles.select} ${erroresFase1.gradoId ? styles.fieldInvalid : ''}`}
                     disabled={fase1SoloLectura}
+                    aria-invalid={erroresFase1.gradoId ? true : undefined}
                   >
                     <option value="">Selecciona un grado</option>
                     {grados.map(grado => (
@@ -1677,6 +2143,7 @@ function ProgramacionAnualContent() {
                       </option>
                     ))}
                   </select>
+                  <MensajeCampo mensaje={erroresFase1.gradoId} />
                 </div>
 
                 <div className={styles.formGroup}>
@@ -1758,79 +2225,98 @@ function ProgramacionAnualContent() {
                 </div>
 
                 <div className={styles.formGroup}>
-                  <label htmlFor="nivel">Nivel (Opcional)</label>
+                  <label htmlFor="nivel">Nivel</label>
                   <select
                     id="nivel"
                     value={formData.nivelId}
-                    onChange={(e) => {
-                      const selectedNivel = niveles.find(n => n.id.toString() === e.target.value)
-                      setFormData({ 
-                        ...formData, 
-                        nivel: selectedNivel?.descripcion || '', 
-                        nivelId: e.target.value 
-                      })
-                    }}
                     className={styles.select}
-                    disabled={fase1SoloLectura}
+                    disabled
+                    aria-readonly
                   >
-                    <option value="">Selecciona un nivel</option>
-                    {niveles.map(nivel => (
-                      <option key={nivel.id} value={nivel.id}>{nivel.descripcion}</option>
-                    ))}
+                    {niveles.length === 0 ? (
+                      <option value="">Secundaria</option>
+                    ) : (
+                      niveles.map((nivel) => (
+                        <option key={nivel.id} value={nivel.id}>
+                          {nivel.descripcion}
+                        </option>
+                      ))
+                    )}
                   </select>
                 </div>
 
                 <div className={styles.formGroup}>
-                  <label htmlFor="departamento">Departamento (Opcional)</label>
+                  <label htmlFor="departamento">
+                    Departamento <span className={styles.required}>*</span>
+                  </label>
                   <select
                     id="departamento"
                     value={formData.departamento}
                     onChange={(e) => handleDepartamentoChange(e.target.value)}
-                    className={styles.select}
+                    className={`${styles.select} ${erroresFase1.departamento ? styles.fieldInvalid : ''}`}
                     disabled={fase1SoloLectura}
+                    aria-invalid={erroresFase1.departamento ? true : undefined}
                   >
                     <option value="">Selecciona un departamento</option>
                     {getDepartamentos().map(depto => (
                       <option key={depto} value={depto}>{depto}</option>
                     ))}
                   </select>
+                  <MensajeCampo mensaje={erroresFase1.departamento} />
                 </div>
 
                 <div className={styles.formGroup}>
-                  <label htmlFor="provincia">Provincia (Opcional)</label>
+                  <label htmlFor="provincia">
+                    Provincia <span className={styles.required}>*</span>
+                  </label>
                   <select
                     id="provincia"
                     value={formData.provincia}
                     onChange={(e) => handleProvinciaChange(e.target.value)}
-                    className={styles.select}
+                    className={`${styles.select} ${erroresFase1.provincia ? styles.fieldInvalid : ''}`}
                     disabled={fase1SoloLectura || !formData.departamento}
+                    aria-invalid={erroresFase1.provincia ? true : undefined}
                   >
                     <option value="">Selecciona una provincia</option>
                     {provinciasDisponibles.map(prov => (
                       <option key={prov} value={prov}>{prov}</option>
                     ))}
                   </select>
+                  <MensajeCampo mensaje={erroresFase1.provincia} />
                 </div>
 
                 <div className={styles.formGroup}>
-                  <label htmlFor="distrito">Distrito (Opcional)</label>
+                  <label htmlFor="distrito">
+                    Distrito <span className={styles.required}>*</span>
+                  </label>
                   <select
                     id="distrito"
                     value={formData.distrito}
-                    onChange={(e) => setFormData({ ...formData, distrito: e.target.value })}
-                    className={styles.select}
+                    onChange={(e) => {
+                      setFormData({ ...formData, distrito: e.target.value })
+                      limpiarErrorFase1('distrito')
+                    }}
+                    className={`${styles.select} ${erroresFase1.distrito ? styles.fieldInvalid : ''}`}
                     disabled={fase1SoloLectura || !formData.provincia}
+                    aria-invalid={erroresFase1.distrito ? true : undefined}
                   >
                     <option value="">Selecciona un distrito</option>
                     {distritosDisponibles.map(dist => (
                       <option key={dist} value={dist}>{dist}</option>
                     ))}
                   </select>
+                  <MensajeCampo mensaje={erroresFase1.distrito} />
                 </div>
               </div>
 
               <div className={styles.buttonGroup}>
-                <button type="submit" className={styles.button}>Continuar a Fase 2</button>
+                <button
+                  type="submit"
+                  className={styles.button}
+                  disabled={bloqueadoPorCuota}
+                >
+                  Continuar a Fase 2
+                </button>
               </div>
             </form>
           )}
@@ -1842,80 +2328,262 @@ function ProgramacionAnualContent() {
                 Define las unidades que compondrán tu programación anual. Puedes escribir tus ideas o dejar que la IA las proponga.
               </p>
 
+              <div className={styles.iaTogglesRow}>
+                <label
+                  className={`${styles.iaRadioCard} ${
+                    modoIngresoPlan === 'completo' ? styles.iaRadioCardActiveOpcion1 : ''
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="modoIngresoPlan"
+                    value="completo"
+                    checked={modoIngresoPlan === 'completo'}
+                    onChange={() => aplicarModoIngresoPlan('completo')}
+                  />
+                  <div className={styles.iaToggleCardText}>
+                    <strong>Opción 1</strong>
+                    <span>
+                      El docente <b>sí tiene</b> su título, situación significativa completa,
+                      campo temático y producto.
+                    </span>
+                  </div>
+                </label>
+                <label
+                  className={`${styles.iaRadioCard} ${
+                    modoIngresoPlan === 'con_ia' ? styles.iaRadioCardActive : ''
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="modoIngresoPlan"
+                    value="con_ia"
+                    checked={modoIngresoPlan === 'con_ia'}
+                    onChange={() => aplicarModoIngresoPlan('con_ia')}
+                  />
+                  <div className={styles.iaToggleCardText}>
+                    <strong>Opción 2</strong>
+                    <span>
+                      El docente <b>no tiene</b> título ni situación significativa
+                      (la IA los generará).
+                    </span>
+                  </div>
+                </label>
+              </div>
+
+              {!modoIngresoPlan && (
+                <p className={styles.modoIngresoHint}>
+                  Selecciona una opción para mostrar y configurar las unidades.
+                </p>
+              )}
+
+              {modoIngresoPlan && !accesoTodasUnidades && (
+                <div className={styles.trialUnidadesBanner}>
+                  <span className={styles.trialUnidadesBannerIcon} aria-hidden>
+                    !
+                  </span>
+                  <div className={styles.trialUnidadesBannerText}>
+                    <strong>Modo prueba gratuita</strong>{' '}
+                    Solo puedes configurar la <strong>UNIDAD 1</strong>. Las demás unidades se
+                    habilitan al activar un plan de pago.{' '}
+                    <Link href={RUTA_PLANES_PAGO} className={styles.trialUnidadesLink}>
+                      Ver planes
+                    </Link>
+                  </div>
+                </div>
+              )}
+
+              {modoIngresoPlan && (
               <div className={styles.unidadesContainer}>
                 {unidades.map((unidad, index) => {
                   if (index === 0) return null
                   const unidadRegistrada = esUnidadRegistradaEnPlan(index)
-                  const errPar =
-                    erroresParUnidad[index] ??
-                    (!unidadRegistrada
-                      ? erroresParProblemaProducto(
-                          unidad.problemaPotencialidad,
-                          unidad.producto
-                        )
-                      : {})
+                  const bloqueadaTrial = unidadBloqueadaTrial(index)
+                  const noEditable = unidadNoEditable(index)
                   return (
                   <div
                     key={index}
                     className={`${styles.unidadCard} ${
+                      docenteCompleto ? styles.unidadCardOpcion1 : ''
+                    } ${
                       unidadRegistrada ? styles.unidadCardRegistrada : ''
-                    }`}
+                    } ${bloqueadaTrial ? styles.unidadCardBloqueada : ''}`}
                   >
                     <h3 className={styles.unidadTitle}>
                       UNIDAD {index}
                       {unidadRegistrada && (
                         <span className={styles.unidadBadgeRegistrada}>Registrada</span>
                       )}
+                      {bloqueadaTrial && (
+                        <span className={styles.unidadBadgeBloqueada}>Requiere plan</span>
+                      )}
                     </h3>
+                    {bloqueadaTrial && (
+                      <p className={styles.unidadBloqueadaMsg}>
+                        Disponible con plan de pago.{' '}
+                        <Link href={RUTA_PLANES_PAGO}>Activar plan</Link>
+                      </p>
+                    )}
 
+                    {docenteCompleto && (
+                      <div className={styles.formGroup}>
+                        <label htmlFor={`titulo-${index}`}>
+                          Título de la unidad
+                          {!noEditable ? <span className={styles.required}> *</span> : null}
+                        </label>
+                        <input
+                          id={`titulo-${index}`}
+                          type="text"
+                          value={unidad.tituloUnidad}
+                          onChange={(e) =>
+                            handleUnidadChange(index, 'tituloUnidad', e.target.value)
+                          }
+                          className={styles.input}
+                          placeholder="Ej: Promovemos la salud como un bien de todos"
+                          disabled={noEditable}
+                          readOnly={noEditable}
+                        />
+                      </div>
+                    )}
+
+                    {docenteCompleto && (
+                      <div className={styles.formGroup}>
+                        <label htmlFor={`situacion-${index}`}>
+                          Situación significativa
+                          {!noEditable ? <span className={styles.required}> *</span> : null}
+                        </label>
+                        <textarea
+                          id={`situacion-${index}`}
+                          value={unidad.situacionSignificativa}
+                          onChange={(e) =>
+                            handleUnidadChange(index, 'situacionSignificativa', e.target.value)
+                          }
+                          className={`${styles.input} ${styles.textareaProblema}`}
+                          placeholder="Escribe la situación significativa de esta unidad"
+                          disabled={noEditable}
+                          readOnly={noEditable}
+                          rows={5}
+                        />
+                      </div>
+                    )}
+
+                    {!docenteCompleto && (
                     <div className={styles.formGroup}>
                       <label htmlFor={`problema-${index}`}>
                         Problema o potencialidad
-                        {!unidadRegistrada && unidad.producto.trim() ? (
-                          <span className={styles.required}> *</span>
-                        ) : null}
+                        {!noEditable ? <span className={styles.required}> *</span> : null}
                       </label>
-                      <input
-                        id={`problema-${index}`}
-                        type="text"
-                        value={unidad.problemaPotencialidad}
-                        onChange={(e) => handleUnidadChange(index, 'problemaPotencialidad', e.target.value)}
-                        className={`${styles.input} ${errPar.problema ? styles.inputError : ''}`}
-                        placeholder="Describe el problema o potencialidad"
-                        disabled={unidadRegistrada}
-                        readOnly={unidadRegistrada}
-                        aria-invalid={errPar.problema || undefined}
-                      />
-                      {errPar.problema && (
-                        <p className={styles.fieldErrorHint}>
-                          Obligatorio porque ingresaste el producto.
-                        </p>
-                      )}
+                      <div className={styles.inputConSugerencia}>
+                        <input
+                          id={`problema-${index}`}
+                          type="text"
+                          value={unidad.problemaPotencialidad}
+                          onChange={(e) => handleUnidadChange(index, 'problemaPotencialidad', e.target.value)}
+                          className={styles.input}
+                          placeholder="Ej: Alimentación saludable, contaminación ambiental, etc."
+                          disabled={noEditable}
+                          readOnly={noEditable}
+                        />
+                        {!noEditable && (
+                          <button
+                            type="button"
+                            className={styles.btnSugerenciasIcon}
+                            onClick={() => abrirModalSugerencias(index, 'problema')}
+                            title="Sugerencias"
+                            aria-label="Ver sugerencias de problema o potencialidad"
+                          >
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                              <path d="M9 18h6" />
+                              <path d="M10 22h4" />
+                              <path d="M12 2a7 7 0 0 0-4 12.7V17h8v-2.3A7 7 0 0 0 12 2z" />
+                            </svg>
+                          </button>
+                        )}
+                      </div>
                     </div>
+                    )}
 
                     <div className={styles.formGroup}>
                       <label htmlFor={`producto-${index}`}>
                         Producto
-                        {!unidadRegistrada && unidad.problemaPotencialidad.trim() ? (
+                        {!noEditable ? <span className={styles.required}> *</span> : null}
+                      </label>
+                      <div className={styles.inputConSugerencia}>
+                        <input
+                          id={`producto-${index}`}
+                          type="text"
+                          value={unidad.producto}
+                          onChange={(e) => handleUnidadChange(index, 'producto', e.target.value)}
+                          className={styles.input}
+                          placeholder="Ej: Mural informativo, presentación oral, prototipo"
+                          disabled={noEditable}
+                          readOnly={noEditable}
+                        />
+                        {!noEditable && (
+                          <button
+                            type="button"
+                            className={styles.btnSugerenciasIcon}
+                            onClick={() => abrirModalSugerencias(index, 'producto')}
+                            title="Sugerencias"
+                            aria-label="Ver sugerencias de producto"
+                          >
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                              <path d="M9 18h6" />
+                              <path d="M10 22h4" />
+                              <path d="M12 2a7 7 0 0 0-4 12.7V17h8v-2.3A7 7 0 0 0 12 2z" />
+                            </svg>
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className={styles.formGroup} id={`campo-tematico-${index}`}>
+                      <label htmlFor={`campo-tematico-input-${index}`}>
+                        Campo temático
+                        {!noEditable &&
+                        (docenteCompleto
+                          ? unidad.producto.trim() ||
+                            unidad.tituloUnidad.trim() ||
+                            unidad.situacionSignificativa.trim()
+                          : unidad.problemaPotencialidad.trim() || unidad.producto.trim()) ? (
                           <span className={styles.required}> *</span>
                         ) : null}
+                        <span className={styles.campoTematicoAyuda}>
+                          {' '}
+                          [Escribe al menos {MIN_CAMPOS_TEMATICOS} ítems, cada uno en una línea que
+                          empiece con guion (- )]
+                        </span>
                       </label>
-                      <input
-                        id={`producto-${index}`}
-                        type="text"
-                        value={unidad.producto}
-                        onChange={(e) => handleUnidadChange(index, 'producto', e.target.value)}
-                        className={`${styles.input} ${errPar.producto ? styles.inputError : ''}`}
-                        placeholder="Ej: Mural informativo, presentación oral, prototipo"
-                        disabled={unidadRegistrada}
-                        readOnly={unidadRegistrada}
-                        aria-invalid={errPar.producto || undefined}
+                      <textarea
+                        id={`campo-tematico-input-${index}`}
+                        value={unidad.campoTematico}
+                        onChange={(e) =>
+                          handleUnidadChange(index, 'campoTematico', e.target.value)
+                        }
+                        className={`${styles.input} ${styles.textareaProblema} ${
+                          unidad.campoTematico.trim() &&
+                          !campoTematicoEsValido(unidad.campoTematico)
+                            ? styles.inputError
+                            : ''
+                        }`}
+                        placeholder={EJEMPLO_CAMPO_TEMATICO}
+                        disabled={noEditable}
+                        readOnly={noEditable}
+                        rows={6}
                       />
-                      {errPar.producto && (
-                        <p className={styles.fieldErrorHint}>
-                          Obligatorio porque ingresaste el problema o potencialidad.
+                      {unidad.campoTematico.trim() ? (
+                        <p
+                          className={
+                            campoTematicoEsValido(unidad.campoTematico)
+                              ? styles.campoTematicoOk
+                              : styles.fieldErrorHint
+                          }
+                        >
+                          {campoTematicoEsValido(unidad.campoTematico)
+                            ? `${contarGuionesCampoTematico(unidad.campoTematico)} guiones detectados ✓`
+                            : `Faltan guiones: tienes ${contarGuionesCampoTematico(unidad.campoTematico)} de ${MIN_CAMPOS_TEMATICOS} mínimos.`}
                         </p>
-                      )}
+                      ) : null}
                     </div>
 
                     {(unidad.desempeniosSeleccionados?.length ?? 0) > 0 && (
@@ -1939,15 +2607,15 @@ function ProgramacionAnualContent() {
                                   <button
                                     type="button"
                                     onClick={() => eliminarDesempenio(index, id)}
-                                    disabled={unidadRegistrada}
+                                    disabled={noEditable}
                                     style={{
-                                      background: unidadRegistrada ? '#cbd5e1' : '#ef4444',
+                                      background: noEditable ? '#cbd5e1' : '#ef4444',
                                       color: 'white',
                                       border: 'none',
                                       borderRadius: '50%',
                                       width: '20px',
                                       height: '20px',
-                                      cursor: unidadRegistrada ? 'not-allowed' : 'pointer',
+                                      cursor: noEditable ? 'not-allowed' : 'pointer',
                                       display: 'flex',
                                       alignItems: 'center',
                                       justifyContent: 'center',
@@ -1974,6 +2642,7 @@ function ProgramacionAnualContent() {
                   )
                 })}
               </div>
+              )}
 
         
               <div className={styles.buttonGroup}>
@@ -1984,7 +2653,11 @@ function ProgramacionAnualContent() {
                 >
                   Volver a Fase 1
                 </button>
-                <button type="submit" className={styles.button} disabled={loading}>
+                <button
+                  type="submit"
+                  className={styles.button}
+                  disabled={loading || !modoIngresoPlan}
+                >
                   {loading ? 'Generando Programación Anual Completa...' : '🚀 Generar mi PROGRAMACIÓN ANUAL con IA'}
                 </button>
               </div>
@@ -2227,6 +2900,64 @@ function ProgramacionAnualContent() {
                 }}
               >
                 Aceptar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de sugerencias (problema / producto) */}
+      {showModalSugerencias && unidadSugerenciaIndex !== null && tipoSugerencia && (
+        <div
+          className={styles.sugerenciasOverlay}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) cerrarModalSugerencias()
+          }}
+        >
+          <div className={styles.sugerenciasDialog} role="dialog" aria-modal="true">
+            <div className={styles.sugerenciasHeader}>
+              <h2>
+                {tipoSugerencia === 'problema'
+                  ? 'Sugerencias — Problema / Campo temático'
+                  : 'Sugerencias — Producto'}
+              </h2>
+              <p className={styles.sugerenciasSub}>
+                UNIDAD {unidadSugerenciaIndex}
+                {tipoSugerencia === 'producto' && formData.area
+                  ? ` — ${formData.area}`
+                  : ''}{' '}
+                — elige una opción para completar el campo
+              </p>
+            </div>
+            <div className={styles.sugerenciasLista}>
+              {loadingSugerencias ? (
+                <p className={styles.sugerenciasVacio}>Cargando sugerencias…</p>
+              ) : sugerenciasLista.length === 0 ? (
+                <p className={styles.sugerenciasVacio}>
+                  {tipoSugerencia === 'producto' && !formData.areaId
+                    ? 'Selecciona un área en la Fase 1 para ver sugerencias de producto.'
+                    : 'No hay sugerencias registradas para esta área. Puedes agregarlas en el panel de administración.'}
+                </p>
+              ) : (
+                sugerenciasLista.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    className={styles.sugerenciaItem}
+                    onClick={() => seleccionarSugerencia(item.descripcion)}
+                  >
+                    {item.descripcion}
+                  </button>
+                ))
+              )}
+            </div>
+            <div className={styles.sugerenciasFooter}>
+              <button
+                type="button"
+                className={styles.buttonSecondary}
+                onClick={cerrarModalSugerencias}
+              >
+                Cerrar
               </button>
             </div>
           </div>
@@ -2762,6 +3493,8 @@ function ProgramacionAnualContent() {
           </div>
         </div>
       )}
+
+      {AvisoModalEl}
     </>
   )
 }

@@ -19,9 +19,32 @@ import {
   descargarUnidadAprendizaje,
   descargarSesionAprendizaje,
   descargarFichaAprendizaje,
+  generarFichaAprendizaje,
   descargarRubricaAnalitica,
-  descargarListaCotejo
+  generarRubricaAnalitica,
+  descargarSolucionario,
+  descargarListaCotejo,
+  generarSesionRefuerzo,
+  generarExamenUnidad,
+  generarConclusionesDescriptivas,
+  regenerarPlanAnualUnidades,
+  regenerarUnidadAprendizaje,
+  type PlanAnualParaDescarga
 } from '@/lib/home-descarga-documento'
+import { useAvisoModal } from '@/hooks/useAvisoModal'
+import { ModalVisualizarFicha } from './ModalVisualizarFicha'
+import { ModalVisualizarSolucionario } from './ModalVisualizarSolucionario'
+import { ModalVisualizarRubrica } from './ModalVisualizarRubrica'
+import { ModalVisualizarSesionRefuerzo } from './ModalVisualizarSesionRefuerzo'
+import { ModalVisualizarExamen } from './ModalVisualizarExamen'
+import { ModalVisualizarConclusiones } from './ModalVisualizarConclusiones'
+import type { SesionRefuerzoVistaData } from '@/lib/sesion-refuerzo-vista-html'
+import type { ExamenUnidadVistaData } from '@/lib/examen-vista-html'
+import type { ConclusionesVistaData } from '@/lib/conclusiones-vista-html'
+import {
+  tieneSuscripcionActivaParaGrado,
+  type SuscripcionActivaCliente
+} from '@/lib/acceso-cliente'
 
 export type PasoKey = keyof EstadoDocumentosPlan
 
@@ -34,6 +57,11 @@ export const PASOS_DOCUMENTOS: { key: PasoKey; label: string; short: string }[] 
   { key: 'fichas', label: 'Fichas de aprendizaje', short: 'Fichas' },
   { key: 'rubrica', label: 'Rúbrica analítica', short: 'Rúbrica' }
 ]
+
+/** Pasos visibles en la barra de progreso (ficha/rúbrica se gestionan desde Sesiones). */
+export const PASOS_STEPPER = PASOS_DOCUMENTOS.filter(
+  (p) => p.key !== 'fichas' && p.key !== 'rubrica'
+)
 
 type PlanModal = {
   id: number
@@ -66,6 +94,10 @@ export type DocumentosPlanResponse = {
     titulo: string | null
     unidadNumero: string | null
     fechaHora: string
+    tieneFicha?: boolean
+    tieneSolucionario?: boolean
+    tieneRubrica?: boolean
+    tieneListaCotejo?: boolean
   }>
   fichas: Array<{
     id: number
@@ -91,6 +123,14 @@ export type DocumentosPlanResponse = {
     unidadNumero: string | null
     fechaHora: string
   }>
+  solucionarios: Array<{
+    id: number
+    sesionId: number
+    numeroSesion: number
+    titulo: string | null
+    unidadNumero: string | null
+    fechaHora: string
+  }>
 }
 
 function formatearFecha(iso: string) {
@@ -109,6 +149,20 @@ function ordenarClavesUnidad(keys: string[]) {
     const nb = parseInt(b, 10)
     if (!Number.isNaN(na) && !Number.isNaN(nb)) return na - nb
     return a.localeCompare(b, 'es', { sensitivity: 'base' })
+  })
+}
+
+type UnidadModalItem = DocumentosPlanResponse['unidades'][number]
+
+function ordenarUnidadesPorNumero(unidades: UnidadModalItem[]) {
+  return [...unidades].sort((a, b) => {
+    const na = parseInt(String(a.unidad ?? ''), 10)
+    const nb = parseInt(String(b.unidad ?? ''), 10)
+    if (!Number.isNaN(na) && !Number.isNaN(nb)) return na - nb
+    return String(a.unidad ?? '').localeCompare(String(b.unidad ?? ''), 'es', {
+      numeric: true,
+      sensitivity: 'base'
+    })
   })
 }
 
@@ -161,6 +215,28 @@ function fichaDeSesion(
   )
 }
 
+/** Flujo unificado: sesión + ficha + solucionario + rúbrica en una sola generación con GPT. */
+function sesionTieneFichaGuardada(
+  datos: DocumentosPlanResponse,
+  sesion: SesionModalItem
+): boolean {
+  return Boolean(sesion.tieneFicha || fichaDeSesion(datos, sesion))
+}
+
+function sesionTieneSolucionarioGuardado(
+  datos: DocumentosPlanResponse,
+  sesion: SesionModalItem
+): boolean {
+  return Boolean(sesion.tieneSolucionario || solucionarioDeSesion(datos, sesion))
+}
+
+function sesionTieneRubricaGuardada(
+  datos: DocumentosPlanResponse,
+  sesion: SesionModalItem
+): boolean {
+  return Boolean(sesion.tieneRubrica || rubricaDeSesion(datos, sesion))
+}
+
 type RubricaModalItem = DocumentosPlanResponse['rubricas'][number]
 
 function rubricaDeSesion(
@@ -176,6 +252,19 @@ function rubricaDeSesion(
 }
 
 type ListaCotejoModalItem = DocumentosPlanResponse['listasCotejo'][number]
+
+type SolucionarioModalItem = DocumentosPlanResponse['solucionarios'][number]
+
+function solucionarioDeSesion(
+  datos: DocumentosPlanResponse,
+  sesion: SesionModalItem
+): SolucionarioModalItem | undefined {
+  return (datos.solucionarios ?? []).find(
+    (s) =>
+      s.sesionId === sesion.id ||
+      (s.unidadNumero === sesion.unidadNumero && s.numeroSesion === sesion.numeroSesion)
+  )
+}
 
 function listaCotejoDeSesion(
   datos: DocumentosPlanResponse,
@@ -213,10 +302,10 @@ export function DocumentosStepper({ estado, onPasoClick }: DocumentosStepperProp
     <div className={styles.stepper} aria-label="Documentos generados">
       <p className={styles.stepperTitle}>Progreso de materiales (clic para ver detalle)</p>
       <div className={styles.stepperTrack}>
-        {PASOS_DOCUMENTOS.map((paso, index) => {
+        {PASOS_STEPPER.map((paso, index) => {
           const listo = estado[paso.key]
           const conectorListo =
-            index > 0 ? estado[PASOS_DOCUMENTOS[index - 1].key] : false
+            index > 0 ? estado[PASOS_STEPPER[index - 1].key] : false
           const unidadesGen = estado.unidadesGeneradas ?? []
           const tooltipUnidad =
             paso.key === 'unidad' && unidadesGen.length > 0
@@ -440,10 +529,19 @@ function ItemConDescarga({
   onAntesIrSesiones,
   onGenerarFicha,
   onDescargarFicha,
+  onVisualizarFicha,
+  onGenerarSolucionario,
+  onDescargarSolucionario,
+  onVisualizarSolucionario,
   onGenerarRubrica,
   onDescargarRubrica,
+  onVisualizarRubrica,
   onGenerarListaCotejo,
   onDescargarListaCotejo,
+  onGenerarSesionRefuerzo,
+  onGenerarExamen,
+  onGenerarConclusionesDescriptiva,
+  onRegenerarUnidad,
   linkRubrica,
   sesionesGeneradas,
   etiquetaDescargar = '📥 Descargar'
@@ -455,32 +553,49 @@ function ItemConDescarga({
   etiquetaDescargar?: string
   linkSesiones?: string
   onAntesIrSesiones?: () => void
-  /** Genera y descarga la ficha sin salir del modal. */
   onGenerarFicha?: () => void | Promise<void>
-  /** Descarga la ficha ya generada de esta sesión. */
   onDescargarFicha?: () => void | Promise<void>
-  /** Genera y descarga la rúbrica sin salir del modal. */
+  onVisualizarFicha?: () => void
+  onGenerarSolucionario?: () => void | Promise<void>
+  onDescargarSolucionario?: () => void | Promise<void>
+  onVisualizarSolucionario?: () => void
   onGenerarRubrica?: () => void | Promise<void>
-  /** Descarga la rúbrica ya generada de esta sesión. */
   onDescargarRubrica?: () => void | Promise<void>
+  onVisualizarRubrica?: () => void
   onGenerarListaCotejo?: () => void | Promise<void>
   onDescargarListaCotejo?: () => void | Promise<void>
+  onGenerarSesionRefuerzo?: () => void | Promise<void>
+  onGenerarExamen?: () => void | Promise<void>
+  onGenerarConclusionesDescriptiva?: () => void | Promise<void>
+  onRegenerarUnidad?: () => void | Promise<void>
   linkRubrica?: string
   sesionesGeneradas?: Array<{ numeroSesion: number; titulo: string | null }>
 }) {
   const cargando = descargandoKey === itemKey
+  const regenerarKey = `${itemKey}-regenerar`
+  const cargandoRegenerar = descargandoKey === regenerarKey
   const fichaKey = `${itemKey}-ficha`
   const generarFichaKey = `${itemKey}-generar-ficha`
+  const solucionarioKey = `${itemKey}-solucionario`
+  const generarSolucionarioKey = `${itemKey}-generar-solucionario`
   const rubricaKey = `${itemKey}-rubrica`
   const generarRubricaKey = `${itemKey}-generar-rubrica`
-  const listaCotejoKey = `${itemKey}-lista-cotejo`
   const generarListaCotejoKey = `${itemKey}-generar-lista-cotejo`
   const cargandoFicha = descargandoKey === fichaKey
   const cargandoGenerarFicha = descargandoKey === generarFichaKey
+  const cargandoSolucionario = descargandoKey === solucionarioKey
+  const cargandoGenerarSolucionario = descargandoKey === generarSolucionarioKey
   const cargandoRubrica = descargandoKey === rubricaKey
   const cargandoGenerarRubrica = descargandoKey === generarRubricaKey
+  const listaCotejoKey = `${itemKey}-lista-cotejo`
   const cargandoListaCotejo = descargandoKey === listaCotejoKey
   const cargandoGenerarListaCotejo = descargandoKey === generarListaCotejoKey
+  const generarSesionRefuerzoKey = `${itemKey}-generar-sesion-refuerzo`
+  const cargandoGenerarSesionRefuerzo = descargandoKey === generarSesionRefuerzoKey
+  const generarExamenKey = `${itemKey}-generar-examen`
+  const cargandoGenerarExamen = descargandoKey === generarExamenKey
+  const generarConclusionesKey = `${itemKey}-generar-conclusiones`
+  const cargandoGenerarConclusiones = descargandoKey === generarConclusionesKey
   const countSesiones = sesionesGeneradas?.length ?? 0
   const tooltipSesiones =
     countSesiones > 0
@@ -495,6 +610,24 @@ function ItemConDescarga({
     <li className={styles.modalListItem}>
       <div className={styles.modalListItemBody}>{children}</div>
       <div className={styles.modalListItemActions}>
+        <button
+          type="button"
+          className={styles.modalBtnDescargar}
+          disabled={descargandoKey !== null}
+          onClick={() => void onDescargar()}
+        >
+          {cargando ? 'Descargando…' : etiquetaDescargar}
+        </button>
+        {onRegenerarUnidad && (
+          <button
+            type="button"
+            className={styles.modalBtnRegenerarUnidad}
+            disabled={descargandoKey !== null}
+            onClick={() => void onRegenerarUnidad()}
+          >
+            {cargandoRegenerar ? 'Regenerando…' : '🔄 Regenerar unidad'}
+          </button>
+        )}
         {linkSesiones && (
           <Link
             href={linkSesiones}
@@ -531,6 +664,45 @@ function ItemConDescarga({
             {cargandoFicha ? 'Descargando…' : '📥 Descargar ficha'}
           </button>
         ) : null}
+        {onVisualizarFicha && (
+          <button
+            type="button"
+            className={styles.modalBtnVisualizarFicha}
+            disabled={descargandoKey !== null}
+            onClick={onVisualizarFicha}
+          >
+            👁 Visualizar ficha
+          </button>
+        )}
+        {onGenerarSolucionario ? (
+          <button
+            type="button"
+            className={styles.modalBtnGenerarFicha}
+            disabled={descargandoKey !== null}
+            onClick={() => void onGenerarSolucionario()}
+          >
+            {cargandoGenerarSolucionario ? 'Generando…' : '➕ Generar solucionario'}
+          </button>
+        ) : onDescargarSolucionario ? (
+          <button
+            type="button"
+            className={styles.modalBtnFicha}
+            disabled={descargandoKey !== null}
+            onClick={() => void onDescargarSolucionario()}
+          >
+            {cargandoSolucionario ? 'Descargando…' : '📥 Descargar solucionario'}
+          </button>
+        ) : null}
+        {onVisualizarSolucionario && (
+          <button
+            type="button"
+            className={styles.modalBtnVisualizarFicha}
+            disabled={descargandoKey !== null}
+            onClick={onVisualizarSolucionario}
+          >
+            👁 Visualizar solucionario
+          </button>
+        )}
         {onGenerarRubrica ? (
           <button
             type="button"
@@ -554,6 +726,16 @@ function ItemConDescarga({
             📊 Ir a rúbrica
           </Link>
         ) : null}
+        {onVisualizarRubrica && (
+          <button
+            type="button"
+            className={styles.modalBtnVisualizarFicha}
+            disabled={descargandoKey !== null}
+            onClick={onVisualizarRubrica}
+          >
+            👁 Visualizar rúbrica
+          </button>
+        )}
         {onGenerarListaCotejo ? (
           <button
             type="button"
@@ -573,14 +755,38 @@ function ItemConDescarga({
             {cargandoListaCotejo ? 'Descargando…' : '📥 Descargar lista cotejo'}
           </button>
         ) : null}
-        <button
-          type="button"
-          className={styles.modalBtnDescargar}
-          disabled={descargandoKey !== null}
-          onClick={() => void onDescargar()}
-        >
-          {cargando ? 'Descargando…' : etiquetaDescargar}
-        </button>
+        {onGenerarSesionRefuerzo && (
+          <button
+            type="button"
+            className={styles.modalBtnGenerarFicha}
+            disabled={descargandoKey !== null}
+            onClick={() => void onGenerarSesionRefuerzo()}
+          >
+            {cargandoGenerarSesionRefuerzo ? 'Generando…' : '➕ Sesión de refuerzo'}
+          </button>
+        )}
+        {onGenerarExamen && (
+          <button
+            type="button"
+            className={styles.modalBtnGenerarExamen}
+            disabled={descargandoKey !== null}
+            onClick={() => void onGenerarExamen()}
+          >
+            {cargandoGenerarExamen ? 'Generando…' : '📝 Generar exámenes'}
+          </button>
+        )}
+        {onGenerarConclusionesDescriptiva && (
+          <button
+            type="button"
+            className={styles.modalBtnGenerarConclusiones}
+            disabled={descargandoKey !== null}
+            onClick={() => void onGenerarConclusionesDescriptiva()}
+          >
+            {cargandoGenerarConclusiones
+              ? 'Generando…'
+              : '📋 Generar conclusiones descriptivas'}
+          </button>
+        )}
       </div>
     </li>
   )
@@ -598,15 +804,104 @@ export function StepModalDocumentos({
   onRecargarDatos,
   unidadTabInicial
 }: StepModalProps) {
+  const { manejarErrorGeneracion, mostrarAvisoModoPruebaFichaCotejo, AvisoModalEl } =
+    useAvisoModal('EducaPlus · Mis documentos')
+  const [suscripcionActiva, setSuscripcionActiva] = useState<SuscripcionActivaCliente>(null)
+  const [cuotaUnidad, setCuotaUnidad] = useState<{
+    limite: number | null
+    usados: number
+    restantes: number | null
+    puedeCrear: boolean
+    mensaje: string | null
+    periodo?: string
+  } | null>(null)
+  const [cuotaPlanAnual, setCuotaPlanAnual] = useState<{
+    limite: number | null
+    usados: number
+    restantes: number | null
+    puedeCrear: boolean
+    mensaje: string | null
+    periodo?: string
+  } | null>(null)
   const [descargandoKey, setDescargandoKey] = useState<string | null>(null)
   const [descargandoPlanAnual, setDescargandoPlanAnual] = useState(false)
+  const [regenerandoPlanAnual, setRegenerandoPlanAnual] = useState(false)
+  const [modoRegeneracionPlan, setModoRegeneracionPlan] = useState(false)
+  const [unidadesRegenerarSeleccionadas, setUnidadesRegenerarSeleccionadas] = useState<
+    number[]
+  >([])
+  const [creditosRegeneracion, setCreditosRegeneracion] = useState<{
+    total: number
+    usados: number
+    restantes: number
+  } | null>(null)
   const [unidadActivaTab, setUnidadActivaTab] = useState<string | null>(null)
   const [unidadAcordeonAbierta, setUnidadAcordeonAbierta] = useState<string | null>(null)
   const [sesionFichaActiva, setSesionFichaActiva] = useState<{
     unidad: string
     numeroSesion: number
   } | null>(null)
+  const [fichaVistaSesion, setFichaVistaSesion] = useState<{
+    id: number
+    titulo: string | null
+  } | null>(null)
+  const [solucionarioVistaSesion, setSolucionarioVistaSesion] = useState<{
+    id: number
+    titulo: string | null
+  } | null>(null)
+  const [rubricaVistaSesion, setRubricaVistaSesion] = useState<{
+    id: number
+    titulo: string | null
+  } | null>(null)
+  const [refuerzoVistaSesion, setRefuerzoVistaSesion] = useState<{
+    id: number
+    titulo: string | null
+    cargando: boolean
+    error: string | null
+    datos: SesionRefuerzoVistaData | null
+  } | null>(null)
+  const [examenVistaUnidad, setExamenVistaUnidad] = useState<{
+    id: number
+    titulo: string | null
+    cargando: boolean
+    error: string | null
+    datos: ExamenUnidadVistaData | null
+  } | null>(null)
+  const [conclusionesVistaUnidad, setConclusionesVistaUnidad] = useState<{
+    id: number
+    cargando: boolean
+    error: string | null
+    datos: ConclusionesVistaData | null
+  } | null>(null)
   const fichasAcordeonIniciadoRef = useRef(false)
+
+  useEffect(() => {
+    if (!abierto) return
+    const cargarAcceso = async () => {
+      try {
+        const res = await fetch('/api/usuario/acceso')
+        if (!res.ok) return
+        const data = await res.json()
+        setSuscripcionActiva(data.suscripcionActiva ?? null)
+        if (data.cuotaUnidad) setCuotaUnidad(data.cuotaUnidad)
+        if (data.cuotaPlanAnual) setCuotaPlanAnual(data.cuotaPlanAnual)
+        if (data.creditosRegeneracion) setCreditosRegeneracion(data.creditosRegeneracion)
+        else setCreditosRegeneracion(null)
+      } catch {
+        /* sin sesión o error de red */
+      }
+    }
+    void cargarAcceso()
+  }, [abierto])
+
+  const modoPrueba = useMemo(() => {
+    if (!plan?.areaId || !plan?.gradoId) return true
+    return !tieneSuscripcionActivaParaGrado(
+      suscripcionActiva,
+      String(plan.areaId),
+      String(plan.gradoId)
+    )
+  }, [plan?.areaId, plan?.gradoId, suscripcionActiva])
 
   const sesionesPorUnidad = useMemo(
     () => (datos ? construirTabsUnidadesSesiones(datos) : null),
@@ -680,18 +975,30 @@ export function StepModalDocumentos({
     }
   }, [abierto, paso, vistaFichas, unidadAcordeonAbierta, sesionFichaActiva])
 
+  useEffect(() => {
+    if (!abierto || paso !== 'planAnual') {
+      setModoRegeneracionPlan(false)
+      setUnidadesRegenerarSeleccionadas([])
+    }
+  }, [abierto, paso])
+
   if (!abierto || !plan || !paso) return null
 
   const generandoFicha = Boolean(descargandoKey?.endsWith('-generar-ficha'))
+  const generandoSolucionario = Boolean(descargandoKey?.endsWith('-generar-solucionario'))
   const generandoRubrica = Boolean(descargandoKey?.endsWith('-generar-rubrica'))
   const generandoListaCotejo = Boolean(
     descargandoKey?.endsWith('-generar-lista-cotejo')
   )
+  const regenerandoUnidad = Boolean(descargandoKey?.endsWith('-regenerar'))
   const generandoDocumento =
     generandoFicha ||
+    generandoSolucionario ||
     generandoRubrica ||
     generandoListaCotejo ||
-    descargandoPlanAnual
+    regenerandoUnidad ||
+    descargandoPlanAnual ||
+    regenerandoPlanAnual
 
   const ejecutarDescargaPlan = async () => {
     if (!onDescargarPlan) return
@@ -699,9 +1006,76 @@ export function StepModalDocumentos({
     try {
       await onDescargarPlan()
     } catch (e) {
-      alert(e instanceof Error ? e.message : 'Error al descargar el plan anual')
+      manejarErrorGeneracion(e)
     } finally {
       setDescargandoPlanAnual(false)
+    }
+  }
+
+  const puedeRegenerarPlan =
+    !modoPrueba &&
+    creditosRegeneracion != null &&
+    creditosRegeneracion.restantes > 0 &&
+    Boolean(datos?.unidadesPlan.length)
+
+  const puedeRegenerarUnidad =
+    !modoPrueba &&
+    creditosRegeneracion != null &&
+    creditosRegeneracion.restantes > 0 &&
+    Boolean(datos?.unidades.length)
+
+  const ejecutarRegeneracionUnidad = async (unidadId: number) => {
+    const key = `unidad-${unidadId}-regenerar`
+    setDescargandoKey(key)
+    try {
+      await regenerarUnidadAprendizaje(unidadId)
+      if (onRecargarDatos) await onRecargarDatos()
+      if (creditosRegeneracion) {
+        setCreditosRegeneracion({
+          ...creditosRegeneracion,
+          usados: creditosRegeneracion.usados + 1,
+          restantes: Math.max(0, creditosRegeneracion.restantes - 1)
+        })
+      }
+    } catch (e) {
+      manejarErrorGeneracion(e)
+    } finally {
+      setDescargandoKey(null)
+    }
+  }
+
+  const toggleUnidadRegenerar = (numero: number) => {
+    setUnidadesRegenerarSeleccionadas((prev) =>
+      prev.includes(numero) ? prev.filter((n) => n !== numero) : [...prev, numero]
+    )
+  }
+
+  const cancelarModoRegeneracion = () => {
+    setModoRegeneracionPlan(false)
+    setUnidadesRegenerarSeleccionadas([])
+  }
+
+  const ejecutarRegeneracionPlan = async () => {
+    if (unidadesRegenerarSeleccionadas.length === 0) return
+    setRegenerandoPlanAnual(true)
+    try {
+      await regenerarPlanAnualUnidades(
+        plan as PlanAnualParaDescarga,
+        unidadesRegenerarSeleccionadas
+      )
+      cancelarModoRegeneracion()
+      if (onRecargarDatos) await onRecargarDatos()
+      if (creditosRegeneracion) {
+        setCreditosRegeneracion({
+          ...creditosRegeneracion,
+          usados: creditosRegeneracion.usados + 1,
+          restantes: Math.max(0, creditosRegeneracion.restantes - 1)
+        })
+      }
+    } catch (e) {
+      manejarErrorGeneracion(e)
+    } finally {
+      setRegenerandoPlanAnual(false)
     }
   }
 
@@ -803,12 +1177,41 @@ export function StepModalDocumentos({
       ? 'Las 8 unidades del plan ya están configuradas'
       : `${PLAN_UNIDADES_MAX - unidadesConfiguradasPlan} unidad(es) por configurar en el plan`
 
-  const ejecutarDescarga = async (key: string, fn: () => Promise<void>) => {
+  const puedeGenerarUnidadAprendizaje = cuotaUnidad?.puedeCrear !== false
+  const contadorUnidadBtn =
+    cuotaUnidad?.limite != null
+      ? ` (${cuotaUnidad.usados} de ${cuotaUnidad.limite})`
+      : ' (… de …)'
+  const etiquetaPeriodoCuota = (periodo?: string) =>
+    periodo === 'anual' ? 'en tu vigencia anual' : 'este mes'
+  const textoUsoUnidad =
+    cuotaUnidad?.limite != null
+      ? `Uso del plan: ${cuotaUnidad.usados} de ${cuotaUnidad.limite} unidades de aprendizaje ${etiquetaPeriodoCuota(cuotaUnidad.periodo)}.`
+      : null
+  const tituloContadorUnidad =
+    cuotaUnidad?.mensaje ??
+    (cuotaUnidad?.limite != null
+      ? `${cuotaUnidad.restantes ?? 0} unidad(es) de aprendizaje disponibles ${etiquetaPeriodoCuota(cuotaUnidad.periodo)}`
+      : undefined)
+  const textoUsoPlanAnual =
+    cuotaPlanAnual?.limite != null
+      ? `Uso del plan: ${cuotaPlanAnual.usados} de ${cuotaPlanAnual.limite} programaciones anuales ${etiquetaPeriodoCuota(cuotaPlanAnual.periodo)}.`
+      : null
+
+  const ejecutarDescarga = async (
+    key: string,
+    fn: () => Promise<void>,
+    opts?: { requierePlan?: boolean }
+  ) => {
+    if (opts?.requierePlan && modoPrueba) {
+      mostrarAvisoModoPruebaFichaCotejo()
+      return
+    }
     setDescargandoKey(key)
     try {
       await fn()
     } catch (e) {
-      alert(e instanceof Error ? e.message : 'Error al descargar')
+      manejarErrorGeneracion(e)
     } finally {
       setDescargandoKey(null)
     }
@@ -832,15 +1235,34 @@ export function StepModalDocumentos({
         return (
           <ul className={styles.modalList}>
             {datos.unidadesPlan.map((u) => (
-              <li key={u.numero} className={styles.modalListItem}>
-                <strong>Unidad {u.numero}</strong>
-                {u.tituloUnidad && <span> — {u.tituloUnidad}</span>}
-                {u.producto && (
-                  <p className={styles.modalItemSub}>
-                    Producto: {u.producto.slice(0, 80)}
-                    {u.producto.length > 80 ? '…' : ''}
-                  </p>
+              <li
+                key={u.numero}
+                className={`${styles.modalListItem} ${
+                  modoRegeneracionPlan ? styles.modalListItemRegenerar : ''
+                }`}
+              >
+                {modoRegeneracionPlan && (
+                  <label className={styles.modalRegenerarCheckboxLabel}>
+                    <input
+                      type="checkbox"
+                      className={styles.modalRegenerarCheckbox}
+                      checked={unidadesRegenerarSeleccionadas.includes(u.numero)}
+                      onChange={() => toggleUnidadRegenerar(u.numero)}
+                      disabled={regenerandoPlanAnual}
+                    />
+                    <span className={styles.srOnly}>Regenerar unidad {u.numero}</span>
+                  </label>
                 )}
+                <div className={styles.modalListItemBody}>
+                  <strong>Unidad {u.numero}</strong>
+                  {u.tituloUnidad && <span> — {u.tituloUnidad}</span>}
+                  {u.producto && (
+                    <p className={styles.modalItemSub}>
+                      Producto: {u.producto.slice(0, 80)}
+                      {u.producto.length > 80 ? '…' : ''}
+                    </p>
+                  )}
+                </div>
               </li>
             ))}
           </ul>
@@ -854,7 +1276,7 @@ export function StepModalDocumentos({
         }
         return (
           <ul className={styles.modalList}>
-            {datos.unidades.map((u) => (
+            {ordenarUnidadesPorNumero(datos.unidades).map((u) => (
               <ItemConDescarga
                 key={u.id}
                 itemKey={`unidad-${u.id}`}
@@ -867,6 +1289,78 @@ export function StepModalDocumentos({
                 etiquetaDescargar="📥 Descargar unidad"
                 onDescargar={() =>
                   ejecutarDescarga(`unidad-${u.id}`, () => descargarUnidadAprendizaje(u.id))
+                }
+                onRegenerarUnidad={
+                  puedeRegenerarUnidad
+                    ? () => ejecutarRegeneracionUnidad(u.id)
+                    : undefined
+                }
+                onGenerarExamen={() =>
+                  void ejecutarDescarga(`unidad-${u.id}-generar-examen`, async () => {
+                    setExamenVistaUnidad({
+                      id: u.id,
+                      titulo: u.tituloUnidad,
+                      cargando: true,
+                      error: null,
+                      datos: null
+                    })
+                    try {
+                      const result = await generarExamenUnidad(u.id)
+                      setExamenVistaUnidad({
+                        id: u.id,
+                        titulo: u.tituloUnidad,
+                        cargando: false,
+                        error: null,
+                        datos: result.vista
+                      })
+                    } catch (e: unknown) {
+                      setExamenVistaUnidad({
+                        id: u.id,
+                        titulo: u.tituloUnidad,
+                        cargando: false,
+                        error:
+                          e instanceof Error
+                            ? e.message
+                            : 'Error al generar el examen de la unidad',
+                        datos: null
+                      })
+                    }
+                  })
+                }
+                onGenerarConclusionesDescriptiva={
+                  (parseInt(String(u.unidad ?? ''), 10) || 0) % 2 === 0
+                    ? () =>
+                        void ejecutarDescarga(
+                          `unidad-${u.id}-generar-conclusiones`,
+                          async () => {
+                            setConclusionesVistaUnidad({
+                              id: u.id,
+                              cargando: true,
+                              error: null,
+                              datos: null
+                            })
+                            try {
+                              const result = await generarConclusionesDescriptivas(u.id)
+                              setConclusionesVistaUnidad({
+                                id: u.id,
+                                cargando: false,
+                                error: null,
+                                datos: result.vista
+                              })
+                            } catch (e: unknown) {
+                              setConclusionesVistaUnidad({
+                                id: u.id,
+                                cargando: false,
+                                error:
+                                  e instanceof Error
+                                    ? e.message
+                                    : 'Error al generar las conclusiones descriptivas',
+                                datos: null
+                              })
+                            }
+                          }
+                        )
+                    : undefined
                 }
               >
                 <strong>Unidad {u.unidad ?? '—'}</strong>
@@ -937,72 +1431,187 @@ export function StepModalDocumentos({
                   <ul className={styles.modalList}>
                     {sesionesUnidad.map((s) => {
                       const fichaSesion = fichaDeSesion(datos, s)
+                      const solucionarioSesion = solucionarioDeSesion(datos, s)
                       const rubricaSesion = rubricaDeSesion(datos, s)
                       const listaCotejoSesion = listaCotejoDeSesion(datos, s)
+                      const tieneFicha = sesionTieneFichaGuardada(datos, s)
+                      const tieneSolucionario = sesionTieneSolucionarioGuardado(datos, s)
+                      const tieneRubrica = sesionTieneRubricaGuardada(datos, s)
+                      const tieneListaCotejo = Boolean(
+                        listaCotejoSesion || s.tieneListaCotejo
+                      )
+                      const sesionIdFicha = fichaSesion?.sesionId ?? s.id
+                      const sesionIdSolucionario = solucionarioSesion?.sesionId ?? s.id
+                      const sesionIdRubrica = rubricaSesion?.sesionId ?? s.id
                       return (
                       <ItemConDescarga
                         key={s.id}
                         itemKey={`sesion-${s.id}`}
                         descargandoKey={descargandoKey}
                         onGenerarFicha={
-                          fichaSesion
-                            ? undefined
-                            : () =>
-                                ejecutarDescarga(`sesion-${s.id}-generar-ficha`, async () => {
-                                  await descargarFichaAprendizaje(s.id)
-                                  await onRecargarDatos?.()
-                                })
+                          !tieneFicha
+                            ? () =>
+                                void ejecutarDescarga(
+                                  `sesion-${s.id}-generar-ficha`,
+                                  async () => {
+                                    await generarFichaAprendizaje(s.id)
+                                    await onRecargarDatos?.()
+                                    setFichaVistaSesion({
+                                      id: s.id,
+                                      titulo: s.titulo
+                                    })
+                                  },
+                                  { requierePlan: true }
+                                )
+                            : undefined
                         }
                         onDescargarFicha={
-                          fichaSesion
+                          tieneFicha
                             ? () =>
-                                ejecutarDescarga(`sesion-${s.id}-ficha`, () =>
-                                  descargarFichaAprendizaje(fichaSesion.sesionId)
+                                void ejecutarDescarga(
+                                  `sesion-${s.id}-ficha`,
+                                  () => descargarFichaAprendizaje(sesionIdFicha),
+                                  { requierePlan: true }
                                 )
+                            : undefined
+                        }
+                        onVisualizarFicha={
+                          tieneFicha
+                            ? () => {
+                                if (modoPrueba) {
+                                  mostrarAvisoModoPruebaFichaCotejo()
+                                  return
+                                }
+                                setFichaVistaSesion({
+                                  id: sesionIdFicha,
+                                  titulo: s.titulo
+                                })
+                              }
+                            : undefined
+                        }
+                        onGenerarSolucionario={undefined}
+                        onDescargarSolucionario={
+                          tieneSolucionario
+                            ? () =>
+                                void ejecutarDescarga(
+                                  `sesion-${s.id}-solucionario`,
+                                  () => descargarSolucionario(sesionIdSolucionario),
+                                  { requierePlan: true }
+                                )
+                            : undefined
+                        }
+                        onVisualizarSolucionario={
+                          tieneSolucionario
+                            ? () => {
+                                if (modoPrueba) {
+                                  mostrarAvisoModoPruebaFichaCotejo()
+                                  return
+                                }
+                                setSolucionarioVistaSesion({
+                                  id: sesionIdSolucionario,
+                                  titulo: s.titulo
+                                })
+                              }
                             : undefined
                         }
                         onGenerarRubrica={
-                          rubricaSesion
-                            ? undefined
-                            : () =>
-                                ejecutarDescarga(`sesion-${s.id}-generar-rubrica`, async () => {
-                                  await descargarRubricaAnalitica(s.id)
-                                  await onRecargarDatos?.()
-                                })
-                        }
-                        onDescargarRubrica={
-                          rubricaSesion
+                          !tieneRubrica
                             ? () =>
-                                ejecutarDescarga(`sesion-${s.id}-rubrica`, () =>
-                                  descargarRubricaAnalitica(rubricaSesion.sesionId)
+                                void ejecutarDescarga(
+                                  `sesion-${s.id}-generar-rubrica`,
+                                  async () => {
+                                    await generarRubricaAnalitica(s.id)
+                                    await onRecargarDatos?.()
+                                  },
+                                  { requierePlan: true }
                                 )
                             : undefined
                         }
+                        onDescargarRubrica={
+                          tieneRubrica
+                            ? () =>
+                                void ejecutarDescarga(
+                                  `sesion-${s.id}-rubrica`,
+                                  () => descargarRubricaAnalitica(sesionIdRubrica),
+                                  { requierePlan: true }
+                                )
+                            : undefined
+                        }
+                        onVisualizarRubrica={
+                          tieneRubrica
+                            ? () => {
+                                setRubricaVistaSesion({
+                                  id: sesionIdRubrica,
+                                  titulo: s.titulo
+                                })
+                              }
+                            : undefined
+                        }
                         onGenerarListaCotejo={
-                          listaCotejoSesion
+                          tieneListaCotejo
                             ? undefined
                             : () =>
-                                ejecutarDescarga(
+                                void ejecutarDescarga(
                                   `sesion-${s.id}-generar-lista-cotejo`,
                                   async () => {
                                     await descargarListaCotejo(s.id)
                                     await onRecargarDatos?.()
-                                  }
+                                  },
+                                  { requierePlan: true }
                                 )
                         }
                         onDescargarListaCotejo={
-                          listaCotejoSesion
+                          tieneListaCotejo
                             ? () =>
-                                ejecutarDescarga(`sesion-${s.id}-lista-cotejo`, () =>
-                                  descargarListaCotejo(listaCotejoSesion.sesionId)
+                                void ejecutarDescarga(
+                                  `sesion-${s.id}-lista-cotejo`,
+                                  () => descargarListaCotejo(listaCotejoSesion!.sesionId),
+                                  { requierePlan: true }
                                 )
                             : undefined
                         }
+                        onGenerarSesionRefuerzo={() =>
+                          void ejecutarDescarga(
+                            `sesion-${s.id}-generar-sesion-refuerzo`,
+                            async () => {
+                              setRefuerzoVistaSesion({
+                                id: s.id,
+                                titulo: s.titulo,
+                                cargando: true,
+                                error: null,
+                                datos: null
+                              })
+                              try {
+                                const result = await generarSesionRefuerzo(s.id)
+                                setRefuerzoVistaSesion({
+                                  id: s.id,
+                                  titulo: s.titulo,
+                                  cargando: false,
+                                  error: null,
+                                  datos: result.vista
+                                })
+                              } catch (e: unknown) {
+                                setRefuerzoVistaSesion({
+                                  id: s.id,
+                                  titulo: s.titulo,
+                                  cargando: false,
+                                  error:
+                                    e instanceof Error
+                                      ? e.message
+                                      : 'Error al generar la sesión de refuerzo',
+                                  datos: null
+                                })
+                              }
+                            },
+                            { requierePlan: true }
+                          )
+                        }
                         etiquetaDescargar="📥 Descargar Sesión"
                         onDescargar={() =>
-                          ejecutarDescarga(`sesion-${s.id}`, () =>
-                            descargarSesionAprendizaje(s.id)
-                          )
+                          void ejecutarDescarga(`sesion-${s.id}`, async () => {
+                            await descargarSesionAprendizaje(s.id)
+                            await onRecargarDatos?.()
+                          })
                         }
                       >
                         <strong>Sesión {s.numeroSesion}</strong>
@@ -1171,10 +1780,22 @@ export function StepModalDocumentos({
                                       sesionSeleccionadaFicha.numeroSesion
                                     )}
                                     onDescargar={() =>
-                                      ejecutarDescarga(`ficha-${fichaActiva.id}`, () =>
-                                        descargarFichaAprendizaje(fichaActiva.sesionId)
+                                      void ejecutarDescarga(
+                                        `ficha-${fichaActiva.id}`,
+                                        () => descargarFichaAprendizaje(fichaActiva.sesionId),
+                                        { requierePlan: true }
                                       )
                                     }
+                                    onVisualizarFicha={() => {
+                                      if (modoPrueba) {
+                                        mostrarAvisoModoPruebaFichaCotejo()
+                                        return
+                                      }
+                                      setFichaVistaSesion({
+                                        id: sesionSeleccionadaFicha.id,
+                                        titulo: sesionSeleccionadaFicha.titulo
+                                      })
+                                    }}
                                   >
                                     <strong>Ficha de aprendizaje</strong>
                                     {fichaActiva.titulo && (
@@ -1219,6 +1840,12 @@ export function StepModalDocumentos({
                     descargarRubricaAnalitica(r.sesionId)
                   )
                 }
+                onVisualizarRubrica={() =>
+                  setRubricaVistaSesion({
+                    id: r.sesionId,
+                    titulo: r.titulo
+                  })
+                }
               >
                 <strong>
                   Unidad {r.unidadNumero} · Sesión {r.numeroSesion}
@@ -1248,9 +1875,11 @@ export function StepModalDocumentos({
             ? styles.modalBoxSesiones
             : paso === 'unidad'
               ? styles.modalBoxUnidad
-              : paso === 'fichas'
-                ? styles.modalBoxFichas
-                : ''
+              : paso === 'planAnual'
+                ? styles.modalBoxPlanAnual
+                : paso === 'fichas'
+                  ? styles.modalBoxFichas
+                  : ''
         }`}
         onClick={(e) => e.stopPropagation()}
         role="dialog"
@@ -1272,6 +1901,42 @@ export function StepModalDocumentos({
           {plan.grado}
           {plan.area ? ` · ${plan.area}` : ''} · Año {plan.anio}
         </p>
+
+        {paso === 'unidad' && textoUsoUnidad && (
+          <p
+            className={`${styles.modalUsoCuota} ${!puedeGenerarUnidadAprendizaje ? styles.modalUsoCuotaLimite : ''}`}
+          >
+            {textoUsoUnidad}
+          </p>
+        )}
+        {paso === 'planAnual' && textoUsoPlanAnual && (
+          <p className={styles.modalUsoCuota}>{textoUsoPlanAnual}</p>
+        )}
+        {paso === 'planAnual' && modoPrueba && (
+          <p className={styles.modalUsoCuota}>
+            Modo prueba: la descarga del plan anual se entrega en PDF protegido (no editable).
+          </p>
+        )}
+        {modoPrueba && (paso === 'unidad' || paso === 'sesiones' || paso === 'rubrica') && (
+          <p className={styles.modalUsoCuota}>
+            Modo prueba: los documentos se entregan en PDF protegido (no editable).
+          </p>
+        )}
+        {modoPrueba && paso === 'fichas' && (
+          <p className={styles.modalUsoCuota}>
+            Modo prueba: solo puedes generar la rúbrica analítica (PDF protegido). Las fichas y
+            listas de cotejo requieren activar un plan.
+          </p>
+        )}
+        {paso === 'planAnual' && modoRegeneracionPlan && (
+          <p className={styles.modalRegenerarHint}>
+            Marca las unidades que quieres regenerar con IA. Las demás se conservan tal como
+            están.
+            {creditosRegeneracion
+              ? ` Créditos de regeneración: ${creditosRegeneracion.restantes} de ${creditosRegeneracion.total}.`
+              : ''}
+          </p>
+        )}
 
         {bloqueadoMensaje ? (
           <div className={styles.modalAlert}>{bloqueadoMensaje}</div>
@@ -1304,6 +1969,30 @@ export function StepModalDocumentos({
                       </span>
                     </Link>
                   )
+                ) : paso === 'unidad' ? (
+                  puedeGenerarUnidadAprendizaje ? (
+                    <Link
+                      href={linkGenerar}
+                      className={styles.modalLinkGenerar}
+                      title={tituloContadorUnidad}
+                    >
+                      ➕ {etiquetaLinkGenerar(paso)}
+                      <span className={styles.modalLinkGenerarContador}>
+                        {contadorUnidadBtn}
+                      </span>
+                    </Link>
+                  ) : (
+                    <span
+                      className={`${styles.modalLinkGenerar} ${styles.modalLinkGenerarDisabled}`}
+                      aria-disabled="true"
+                      title={tituloContadorUnidad}
+                    >
+                      ➕ {etiquetaLinkGenerar(paso)}
+                      <span className={styles.modalLinkGenerarContador}>
+                        {contadorUnidadBtn}
+                      </span>
+                    </span>
+                  )
                 ) : (
                   <Link href={linkGenerar} className={styles.modalLinkGenerar}>
                     ➕ {etiquetaLinkGenerar(paso)}
@@ -1314,12 +2003,50 @@ export function StepModalDocumentos({
                     type="button"
                     className={styles.modalLinkSecundario}
                     onClick={() => void ejecutarDescargaPlan()}
-                    disabled={descargandoPlanAnual}
+                    disabled={descargandoPlanAnual || regenerandoPlanAnual || modoRegeneracionPlan}
                   >
                     {descargandoPlanAnual
                       ? 'Descargando…'
                       : '📥 Descargar plan anual'}
                   </button>
+                )}
+                {paso === 'planAnual' && puedeRegenerarPlan && (
+                  <>
+                    {!modoRegeneracionPlan ? (
+                      <button
+                        type="button"
+                        className={styles.modalLinkRegenerar}
+                        onClick={() => setModoRegeneracionPlan(true)}
+                        disabled={regenerandoPlanAnual || descargandoPlanAnual}
+                      >
+                        🔄 Activar regeneración
+                      </button>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          className={styles.modalLinkRegenerar}
+                          onClick={() => void ejecutarRegeneracionPlan()}
+                          disabled={
+                            regenerandoPlanAnual ||
+                            unidadesRegenerarSeleccionadas.length === 0
+                          }
+                        >
+                          {regenerandoPlanAnual
+                            ? 'Regenerando…'
+                            : '🔄 Regenerar plan'}
+                        </button>
+                        <button
+                          type="button"
+                          className={styles.modalLinkSecundario}
+                          onClick={cancelarModoRegeneracion}
+                          disabled={regenerandoPlanAnual}
+                        >
+                          Cancelar regeneración
+                        </button>
+                      </>
+                    )}
+                  </>
                 )}
               </div>
             )}
@@ -1404,13 +2131,15 @@ export function StepModalDocumentos({
                 d="M25 5a20 20 0 0 1 20 20"
                 fill="none"
                 stroke={
-                  generandoRubrica
-                    ? '#7c3aed'
-                    : generandoListaCotejo
-                      ? '#0d9488'
-                      : descargandoPlanAnual && !generandoFicha
-                        ? '#0ea5e9'
-                        : '#667eea'
+                  regenerandoPlanAnual
+                    ? '#ea580c'
+                    : generandoRubrica
+                      ? '#7c3aed'
+                      : generandoListaCotejo
+                        ? '#0d9488'
+                        : descargandoPlanAnual && !generandoFicha
+                          ? '#0ea5e9'
+                          : '#667eea'
                 }
                 strokeWidth="6"
                 strokeLinecap="round"
@@ -1427,30 +2156,99 @@ export function StepModalDocumentos({
             </svg>
           </div>
           <h3 id="generando-doc-modal-title" className={styles.generatingTitle}>
-            {descargandoPlanAnual &&
-            !generandoFicha &&
-            !generandoRubrica &&
-            !generandoListaCotejo
-              ? 'Descargando plan anual…'
-              : generandoRubrica
-                ? 'Generando rúbrica analítica…'
-                : generandoListaCotejo
-                  ? 'Generando lista de cotejo…'
-                  : 'Generando ficha de aprendizaje…'}
+            {regenerandoPlanAnual
+              ? 'Regenerando plan anual…'
+              : regenerandoUnidad
+                ? 'Regenerando unidad de aprendizaje…'
+                : descargandoPlanAnual &&
+                    !generandoFicha &&
+                    !generandoRubrica &&
+                    !generandoListaCotejo
+                  ? 'Descargando plan anual…'
+                  : generandoRubrica
+                    ? 'Generando rúbrica analítica…'
+                    : generandoListaCotejo
+                      ? 'Generando lista de cotejo…'
+                      : 'Generando ficha de aprendizaje…'}
           </h3>
           <p className={styles.generatingText}>
-            {descargandoPlanAnual &&
-            !generandoFicha &&
-            !generandoRubrica &&
-            !generandoListaCotejo
-              ? 'Armando tu documento Word con los datos guardados. Un momento…'
-              : generandoListaCotejo
-                ? 'Rellenando la plantilla con los datos de la sesión. Un momento…'
-                : 'La IA está creando tu documento. Puede tardar varios minutos; no cierres esta ventana.'}
+            {regenerandoPlanAnual
+              ? 'La IA está regenerando las unidades seleccionadas. Descargarás un ZIP con el documento y otro Word con la respuesta cruda de la IA.'
+              : regenerandoUnidad
+                ? 'La IA está regenerando la unidad de aprendizaje. Al terminar se descargará el documento actualizado. No cierres esta ventana.'
+                : descargandoPlanAnual &&
+                  !generandoFicha &&
+                  !generandoRubrica &&
+                  !generandoListaCotejo
+                ? modoPrueba
+                  ? 'Generando PDF protegido con los datos guardados. Puede tardar un momento…'
+                  : 'Armando tu documento Word con los datos guardados. Un momento…'
+                : generandoListaCotejo
+                  ? 'Rellenando la plantilla con los datos de la sesión. Un momento…'
+                  : 'La IA está creando tu documento. Puede tardar varios minutos; no cierres esta ventana.'}
           </p>
         </div>
       </div>
     )}
+
+    {AvisoModalEl}
+
+    <ModalVisualizarFicha
+      abierto={fichaVistaSesion != null}
+      sesionId={fichaVistaSesion?.id ?? null}
+      tituloSesion={
+        fichaVistaSesion?.titulo
+          ? `Sesión — ${fichaVistaSesion.titulo}`
+          : undefined
+      }
+      onCerrar={() => setFichaVistaSesion(null)}
+    />
+
+    <ModalVisualizarSolucionario
+      abierto={solucionarioVistaSesion != null}
+      sesionId={solucionarioVistaSesion?.id ?? null}
+      tituloSesion={
+        solucionarioVistaSesion?.titulo
+          ? `Solucionario — ${solucionarioVistaSesion.titulo}`
+          : undefined
+      }
+      onCerrar={() => setSolucionarioVistaSesion(null)}
+    />
+
+    <ModalVisualizarRubrica
+      abierto={rubricaVistaSesion != null}
+      sesionId={rubricaVistaSesion?.id ?? null}
+      tituloSesion={
+        rubricaVistaSesion?.titulo
+          ? `Rúbrica — ${rubricaVistaSesion.titulo}`
+          : undefined
+      }
+      onCerrar={() => setRubricaVistaSesion(null)}
+    />
+
+    <ModalVisualizarSesionRefuerzo
+      abierto={refuerzoVistaSesion != null}
+      cargando={refuerzoVistaSesion?.cargando ?? false}
+      error={refuerzoVistaSesion?.error ?? null}
+      datos={refuerzoVistaSesion?.datos ?? null}
+      onCerrar={() => setRefuerzoVistaSesion(null)}
+    />
+
+    <ModalVisualizarExamen
+      abierto={examenVistaUnidad != null}
+      cargando={examenVistaUnidad?.cargando ?? false}
+      error={examenVistaUnidad?.error ?? null}
+      datos={examenVistaUnidad?.datos ?? null}
+      onCerrar={() => setExamenVistaUnidad(null)}
+    />
+
+    <ModalVisualizarConclusiones
+      abierto={conclusionesVistaUnidad != null}
+      cargando={conclusionesVistaUnidad?.cargando ?? false}
+      error={conclusionesVistaUnidad?.error ?? null}
+      datos={conclusionesVistaUnidad?.datos ?? null}
+      onCerrar={() => setConclusionesVistaUnidad(null)}
+    />
     </>
   )
 }

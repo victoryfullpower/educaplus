@@ -68,7 +68,8 @@ export async function GET(request: NextRequest) {
         desarrollo: sesion.desarrollo ?? '',
         desarrolloantes: sesion.desarrolloantes ?? '',
         desarrollodurante: sesion.desarrollodurante ?? '',
-        desarrollodespues: sesion.desarrollodespues ?? ''
+        desarrollodespues: sesion.desarrollodespues ?? '',
+        metacognicion: sesion.metacognicion ?? ''
       }
     })
   } catch (error) {

@@ -1,12 +1,21 @@
 'use client'
 
-import { Suspense, useState, useEffect, useRef } from 'react'
+import { Suspense, useState, useEffect, useRef, useMemo } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import Header from '@/components/Header'
 import styles from './unidades-aprendizaje.module.css'
 import { numerosUnidadYaGenerados, obtenerTipoIEDelPlan } from '@/lib/plan-estado-documentos'
 import { linkHomeConAreaTab } from '@/lib/plan-area-tab'
 import { linkSesionesDesdeUnidadPlan } from '@/lib/plan-documentos-links'
+import {
+  etiquetaDuracionSesiones,
+  maxSesionesPorAreaDescripcion,
+  normalizarNumeroSesionesCargado,
+  resolverNumeroSesionesForm
+} from '@/lib/unidad-sesiones-por-area'
+import { errorDesdeResponse } from '@/lib/error-generacion-documento'
+import { useAvisoModal } from '@/hooks/useAvisoModal'
+import { textoCampoTematicoDesdeUnidadPlan } from '@/lib/campo-tematico-unidad'
 
 type UnidadPlanSlot = {
   problemaPotencialidad?: string
@@ -14,6 +23,7 @@ type UnidadPlanSlot = {
   situacionSignificativa?: string
   tituloUnidad?: string
   campoTematico?: string
+  camposTematicos?: string[]
   conocimientos?: string
   competenciasSeleccionadas?: string[]
   desempeniosSeleccionados?: string[]
@@ -48,25 +58,6 @@ function primeraUnidadConDatos(unidades: unknown[]): number {
 }
 
 const UNIDADES_COMBO_DEFAULT = [1, 2, 3, 4, 5, 6, 7, 8]
-
-function semanasDesdeDuracion(duracion: string): number | null {
-  const match = duracion.match(/(\d+)\s*semana/)
-  return match ? parseInt(match[1], 10) : null
-}
-
-/** Último día de la unidad: inicio + N semanas − 1 día (evita desfase por zona horaria). */
-function calcularFechaTermino(fechaInicio: string, duracion: string): string {
-  const semanas = semanasDesdeDuracion(duracion)
-  if (!semanas || !fechaInicio) return ''
-  const inicio = new Date(`${fechaInicio}T12:00:00`)
-  if (Number.isNaN(inicio.getTime())) return ''
-  const fin = new Date(inicio)
-  fin.setDate(fin.getDate() + semanas * 7 - 1)
-  const y = fin.getFullYear()
-  const m = String(fin.getMonth() + 1).padStart(2, '0')
-  const d = String(fin.getDate()).padStart(2, '0')
-  return `${y}-${m}-${d}`
-}
 
 interface Area {
   id: number
@@ -103,6 +94,88 @@ interface Desempenio {
   id: number
   descripcion: string
   idcapacidad: number
+}
+
+function nombreArchivoDesdeResponse(response: Response, fallback: string): string {
+  const contentDisposition = response.headers.get('Content-Disposition')
+  if (!contentDisposition) return fallback
+  const matches = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/)
+  if (!matches?.[1]) return fallback
+  let fileName = decodeURIComponent(matches[1].replace(/['"]/g, ''))
+  if (!fileName.toLowerCase().endsWith('.docx')) {
+    fileName = fileName.replace(/\.txt$/, '') + '.docx'
+  }
+  return fileName
+}
+
+async function descargarBlobComoArchivo(blob: Blob, fileName: string): Promise<void> {
+  const url = window.URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.style.display = 'none'
+  a.download = fileName
+  document.body.appendChild(a)
+  a.click()
+  await new Promise((resolve) => setTimeout(resolve, 200))
+  window.URL.revokeObjectURL(url)
+  if (document.body.contains(a)) document.body.removeChild(a)
+}
+
+function descargarBase64Archivo(base64: string, fileName: string, mimeType: string): void {
+  const bin = atob(base64)
+  const bytes = new Uint8Array(bin.length)
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+  const blob = new Blob([bytes], { type: mimeType })
+  void descargarBlobComoArchivo(blob, fileName)
+}
+
+type ArchivoUnidadGenerado = {
+  fileName: string
+  contentType?: string
+  base64?: string
+  docxBase64?: string
+}
+
+type RespuestaGenerarUnidadJson = {
+  documento: ArchivoUnidadGenerado
+  respuestaIa?: ArchivoUnidadGenerado | null
+}
+
+/** Word del prompt dinámico (templates/prompstUA por área, con datos del formulario). */
+async function fetchYDescargarPromptDinamicoUnidad(
+  formDataPayload: Record<string, unknown>
+): Promise<void> {
+  const response = await fetch('/api/unidades-aprendizaje/generate-prompt-word', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ formData: formDataPayload })
+  })
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({ error: 'Error desconocido' }))
+    throw new Error(
+      (errorData as { error?: string }).error ||
+        `Error al generar el Word del prompt (${response.status})`
+    )
+  }
+
+  const contentType = response.headers.get('Content-Type')
+  if (contentType?.includes('application/json')) {
+    const errorData = await response.json().catch(() => ({ error: 'Error desconocido' }))
+    throw new Error(
+      (errorData as { error?: string }).error || 'Error al generar el documento Word del prompt'
+    )
+  }
+
+  const blob = await response.blob()
+  if (!blob?.size) {
+    throw new Error('No se generó el Word del prompt dinámico')
+  }
+
+  const unidad = String(formDataPayload.unidad ?? '0')
+  const fallback = `prompt-dinamico-${unidad}-${Date.now()}.docx`
+  const fileName = nombreArchivoDesdeResponse(response, fallback)
+  await descargarBlobComoArchivo(blob, fileName)
 }
 
 function UnidadesAprendizajeContent() {
@@ -148,6 +221,7 @@ function UnidadesAprendizajeContent() {
   })
   const [areaSeleccionada, setAreaSeleccionada] = useState<Area | null>(null)
   const router = useRouter()
+  const { manejarErrorGeneracion, AvisoModalEl } = useAvisoModal('EducaPlus · Unidad de aprendizaje')
   const [loading, setLoading] = useState(false)
   const [overlayGeneracion, setOverlayGeneracion] = useState(false)
   const [generacionCompletada, setGeneracionCompletada] = useState(false)
@@ -278,7 +352,9 @@ function UnidadesAprendizajeContent() {
           director: plan.director || prev.director,
           situacionSignificativa:
             unidadData?.situacionSignificativa || prev.situacionSignificativa,
-          producto: unidadData?.producto || prev.producto
+          producto: unidadData?.producto || prev.producto,
+          campoTematico:
+            textoCampoTematicoDesdeUnidadPlan(unidadData) || prev.campoTematico
         }))
 
         setDatosDesdePlanAnual({
@@ -308,6 +384,7 @@ function UnidadesAprendizajeContent() {
       unidad: String(unidadNum),
       situacionSignificativa: unidadData?.situacionSignificativa || '',
       producto: unidadData?.producto || '',
+      campoTematico: textoCampoTematicoDesdeUnidadPlan(unidadData) || '',
       tipoIE: prev.tipoIE || tipoIEPlan || ''
     }))
     setDatosDesdePlanAnual({
@@ -331,6 +408,19 @@ function UnidadesAprendizajeContent() {
       setAreaSeleccionada(null)
     }
   }, [formData.areaId, areas])
+
+  const maxSesionesArea = useMemo(
+    () =>
+      areaSeleccionada
+        ? maxSesionesPorAreaDescripcion(areaSeleccionada.descripcion)
+        : 10,
+    [areaSeleccionada?.descripcion]
+  )
+
+  const opcionesNumeroSesiones = useMemo(
+    () => Array.from({ length: maxSesionesArea }, (_, i) => i + 1),
+    [maxSesionesArea]
+  )
 
   // Cargar competencias cuando cambien área y grado
   useEffect(() => {
@@ -378,6 +468,19 @@ function UnidadesAprendizajeContent() {
             if (unidadGuardada) {
               console.log('📦 Cargando unidad de aprendizaje guardada:', unidadGuardada)
 
+              const sesionesCargadas = Array.isArray(unidadGuardada.sesiones)
+                ? unidadGuardada.sesiones
+                : []
+              const numeroNorm = normalizarNumeroSesionesCargado(
+                unidadGuardada.numeroSesiones,
+                unidadGuardada.duracion,
+                sesionesCargadas.length || undefined
+              )
+              const duracionNorm =
+                numeroNorm && /^\d+$/.test(numeroNorm)
+                  ? etiquetaDuracionSesiones(parseInt(numeroNorm, 10))
+                  : unidadGuardada.duracion || ''
+
               setFormData((prev) => {
                 const tipoIE =
                   unidadGuardada.tipoIE || tipoIEPlan || prev.tipoIE
@@ -385,7 +488,7 @@ function UnidadesAprendizajeContent() {
                   return {
                     ...prev,
                     tipoIE,
-                    duracion: unidadGuardada.duracion || prev.duracion,
+                    duracion: duracionNorm || prev.duracion,
                     fechaInicio: unidadGuardada.fechaInicio || prev.fechaInicio,
                     fechaTermino: unidadGuardada.fechaTermino || prev.fechaTermino,
                     propositoUnidad: unidadGuardada.propositoUnidad || prev.propositoUnidad,
@@ -393,12 +496,15 @@ function UnidadesAprendizajeContent() {
                       ? unidadGuardada.competencias
                       : prev.competencias,
                     campoTematico: unidadGuardada.campoTematico || prev.campoTematico,
-                    numeroSesiones: unidadGuardada.numeroSesiones || prev.numeroSesiones,
+                    numeroSesiones: prev.numeroSesiones || numeroNorm,
                     instrumentoEvaluacion:
                       unidadGuardada.instrumentoEvaluacion || prev.instrumentoEvaluacion,
-                    sesiones: Array.isArray(unidadGuardada.sesiones)
-                      ? unidadGuardada.sesiones
-                      : prev.sesiones
+                    sesiones:
+                      sesionesCargadas.length > 0 &&
+                      (!prev.numeroSesiones ||
+                        sesionesCargadas.length >= parseInt(prev.numeroSesiones, 10))
+                        ? sesionesCargadas
+                        : prev.sesiones
                   }
                 }
                 return {
@@ -414,7 +520,7 @@ function UnidadesAprendizajeContent() {
                   tipoIE,
                   director: unidadGuardada.director || prev.director,
                   docente: unidadGuardada.docente || prev.docente,
-                  duracion: unidadGuardada.duracion || prev.duracion,
+                  duracion: duracionNorm || prev.duracion,
                   fechaInicio: unidadGuardada.fechaInicio || prev.fechaInicio,
                   fechaTermino: unidadGuardada.fechaTermino || prev.fechaTermino,
                   situacionSignificativa:
@@ -425,12 +531,15 @@ function UnidadesAprendizajeContent() {
                     ? unidadGuardada.competencias
                     : prev.competencias,
                   campoTematico: unidadGuardada.campoTematico || prev.campoTematico,
-                  numeroSesiones: unidadGuardada.numeroSesiones || prev.numeroSesiones,
+                  numeroSesiones: prev.numeroSesiones || numeroNorm,
                   instrumentoEvaluacion:
                     unidadGuardada.instrumentoEvaluacion || prev.instrumentoEvaluacion,
-                  sesiones: Array.isArray(unidadGuardada.sesiones)
-                    ? unidadGuardada.sesiones
-                    : prev.sesiones
+                  sesiones:
+                    sesionesCargadas.length > 0 &&
+                    (!prev.numeroSesiones ||
+                      sesionesCargadas.length >= parseInt(prev.numeroSesiones, 10))
+                      ? sesionesCargadas
+                      : prev.sesiones
                 }
               })
 
@@ -476,6 +585,9 @@ function UnidadesAprendizajeContent() {
             if (data.producto) {
               setFormData(prev => ({ ...prev, producto: data.producto }))
             }
+            if (data.campoTematico) {
+              setFormData(prev => ({ ...prev, campoTematico: data.campoTematico }))
+            }
           } else {
             setDatosDesdePlanAnual({ situacionSignificativa: null, producto: null, tituloUnidad: null })
           }
@@ -493,37 +605,32 @@ function UnidadesAprendizajeContent() {
     loadUnidadAprendizajeGuardada()
   }, [formData.unidad, formData.areaId, formData.gradoId, formularioBloqueadoPlan, planIdParam])
 
-  // Calcular número de sesiones basado en semanas y sesionx2
+  // Armar filas de sesiones según el número elegido por el docente
   useEffect(() => {
-    if (!formData.duracion || !areaSeleccionada) {
-      setFormData(prev => {
+    if (!formData.numeroSesiones || !areaSeleccionada) {
+      setFormData((prev) => {
         if (prev.sesiones.length === 0) return prev
         return { ...prev, sesiones: [] }
       })
       return
     }
 
-    // Extraer número de semanas (ej: "1 semana" -> 1)
-    const semanas = semanasDesdeDuracion(formData.duracion)
-    if (semanas === null) {
-      setFormData(prev => {
+    const total = parseInt(formData.numeroSesiones, 10)
+    if (Number.isNaN(total) || total < 1) {
+      setFormData((prev) => {
         if (prev.sesiones.length === 0) return prev
         return { ...prev, sesiones: [] }
       })
       return
     }
 
-    const sesionesPorSemana = areaSeleccionada.sesionx2 === true ? 2 : 1
-    const totalSesiones = semanas * sesionesPorSemana
+    const max = maxSesionesPorAreaDescripcion(areaSeleccionada.descripcion)
+    if (total > max) return
 
-    setFormData(prev => {
-      // Si el número de sesiones no ha cambiado, mantener los títulos existentes
-      if (prev.sesiones.length === totalSesiones) {
-        return prev
-      }
+    setFormData((prev) => {
+      if (prev.sesiones.length === total) return prev
 
-      // Crear array de sesiones, preservando datos existentes si hay menos sesiones
-      const nuevasSesiones = Array.from({ length: totalSesiones }, (_, index) => ({
+      const nuevasSesiones = Array.from({ length: total }, (_, index) => ({
         titulo: prev.sesiones[index]?.titulo || '',
         competenciasSeleccionadas: prev.sesiones[index]?.competenciasSeleccionadas || [],
         capacidadesSeleccionadas: prev.sesiones[index]?.capacidadesSeleccionadas || [],
@@ -533,20 +640,7 @@ function UnidadesAprendizajeContent() {
 
       return { ...prev, sesiones: nuevasSesiones }
     })
-  }, [formData.duracion, areaSeleccionada?.id, areaSeleccionada?.sesionx2])
-
-  useEffect(() => {
-    if (!formData.duracion || !formData.fechaInicio) {
-      setFormData((prev) =>
-        prev.fechaTermino === '' ? prev : { ...prev, fechaTermino: '' }
-      )
-      return
-    }
-    const nueva = calcularFechaTermino(formData.fechaInicio, formData.duracion)
-    setFormData((prev) =>
-      prev.fechaTermino === nueva ? prev : { ...prev, fechaTermino: nueva }
-    )
-  }, [formData.duracion, formData.fechaInicio])
+  }, [formData.numeroSesiones, areaSeleccionada?.id])
 
   // Función para obtener el color pastel de una competencia según su índice
   const getCompetenciaColor = (competenciaIndex: number): { bg: string; border: string; text: string } => {
@@ -742,7 +836,7 @@ function UnidadesAprendizajeContent() {
       !formData.unidad ||
       !formData.areaId ||
       !formData.gradoId ||
-      !formData.duracion ||
+      !formData.numeroSesiones ||
       !formData.fechaInicio ||
       !formData.fechaTermino
     ) {
@@ -839,6 +933,41 @@ function UnidadesAprendizajeContent() {
     setOverlayGeneracion(true)
     setGeneracionCompletada(false)
 
+    const totalSesiones = resolverNumeroSesionesForm(formData)
+    const sesionesConDatos = formData.sesiones.filter(
+      (s) =>
+        (s.titulo && s.titulo.trim()) ||
+        (Array.isArray(s.competenciasSeleccionadas) &&
+          s.competenciasSeleccionadas.length > 0)
+    )
+    const forzarPorCantidad =
+      totalSesiones > 0 &&
+      sesionesConDatos.length > 0 &&
+      sesionesConDatos.length < totalSesiones
+    const forzarFinal = forzarRegeneracion || forzarPorCantidad
+    const sesionesNormalizadas =
+      totalSesiones > 0
+        ? Array.from({ length: totalSesiones }, (_, index) => ({
+            titulo: formData.sesiones[index]?.titulo || '',
+            competenciasSeleccionadas:
+              formData.sesiones[index]?.competenciasSeleccionadas || [],
+            capacidadesSeleccionadas:
+              formData.sesiones[index]?.capacidadesSeleccionadas || [],
+            desempeniosSeleccionados:
+              formData.sesiones[index]?.desempeniosSeleccionados || [],
+            instrumentoEvaluacion:
+              formData.sesiones[index]?.instrumentoEvaluacion || ''
+          }))
+        : formData.sesiones
+
+    const payloadFormData = {
+      ...formData,
+      tituloUnidad: datosDesdePlanAnual.tituloUnidad || '',
+      numeroSesiones: totalSesiones > 0 ? String(totalSesiones) : formData.numeroSesiones,
+      sesiones: sesionesNormalizadas,
+      forzarRegeneracion: forzarFinal
+    }
+
     try {
       const response = await fetch('/api/unidades-aprendizaje/generate-document', {
         method: 'POST',
@@ -846,10 +975,7 @@ function UnidadesAprendizajeContent() {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          formData: {
-            ...formData,
-            forzarRegeneracion: forzarRegeneracion
-          }
+          formData: { ...payloadFormData, incluirArchivosJson: true }
         }),
       })
 
@@ -861,121 +987,69 @@ function UnidadesAprendizajeContent() {
       })
 
       if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ error: 'Error desconocido' }))
-        console.error('❌ Error en la respuesta:', errorData)
-        throw new Error(errorData.error || `Error al generar el documento (${response.status})`)
+        const err = await errorDesdeResponse(response)
+        console.error('❌ Error en la respuesta:', err.message)
+        throw err
       }
 
-      // Verificar que el content-type sea el correcto
-      const contentType = response.headers.get('Content-Type')
-      console.log('📄 Content-Type:', contentType)
+      const contentType = response.headers.get('Content-Type') ?? ''
+      if (!contentType.includes('application/json')) {
+        throw new Error('La API no devolvió los archivos en formato JSON')
+      }
 
-      // Obtener el blob del documento
-      const blob = await response.blob()
-      console.log('📦 Blob recibido:', {
-        size: blob.size,
-        type: blob.type
-      })
-
-      if (blob.size === 0) {
+      const data = (await response.json()) as RespuestaGenerarUnidadJson
+      const docBase64 = data.documento?.base64
+      if (!docBase64) {
         throw new Error('El archivo generado está vacío')
+      }
+
+      descargarBase64Archivo(
+        docBase64,
+        data.documento.fileName || `UNIDAD_${formData.unidad || '0'}_${Date.now()}.docx`,
+        data.documento.contentType ||
+          'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+      )
+
+      await new Promise((resolve) => setTimeout(resolve, 400))
+
+      try {
+        await fetchYDescargarPromptDinamicoUnidad(payloadFormData)
+        console.log('✅ Word del prompt dinámico descargado')
+      } catch (promptError: unknown) {
+        console.warn('⚠️ No se pudo descargar el prompt dinámico:', promptError)
+      }
+
+      if (data.respuestaIa?.docxBase64) {
+        await new Promise((resolve) => setTimeout(resolve, 400))
+        descargarBase64Archivo(
+          data.respuestaIa.docxBase64,
+          data.respuestaIa.fileName || `RESPUESTA_IA_UNIDAD_${formData.unidad || '0'}.docx`,
+          'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        )
+        console.log('✅ Word de respuesta IA descargado')
       }
 
       console.log('✅ Unidad generada correctamente')
       setGeneracionCompletada(true)
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('❌ Error al generar el documento:', error)
-      alert(`Error al generar el documento: ${error.message || 'Error desconocido'}`)
+      manejarErrorGeneracion(error)
       cerrarOverlayGeneracion()
     }
   }
 
   const handleGeneratePromptWord = async () => {
     setLoading(true)
-    
     try {
-      console.log('📤 Enviando solicitud para generar Word del prompt dinámico...', {
-        gradoId: formData.gradoId,
-        unidad: formData.unidad,
-        area: formData.area
+      await fetchYDescargarPromptDinamicoUnidad({
+        ...formData,
+        tituloUnidad: datosDesdePlanAnual.tituloUnidad || ''
       })
-
-      const response = await fetch('/api/unidades-aprendizaje/generate-prompt-word', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          formData: formData
-        }),
-      })
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ error: 'Error desconocido' }))
-        console.error('❌ Error en la respuesta:', errorData)
-        throw new Error(errorData.error || `Error al generar el Word del prompt (${response.status})`)
-      }
-
-      // Verificar el Content-Type de la respuesta
-      const contentType = response.headers.get('Content-Type')
-      console.log('📄 Content-Type recibido:', contentType)
-      
-      // Si la respuesta no es un documento Word, verificar si es un error JSON
-      if (contentType && contentType.includes('application/json')) {
-        const errorData = await response.json().catch(() => ({ error: 'Error desconocido' }))
-        console.error('❌ Error en la respuesta (JSON):', errorData)
-        throw new Error(errorData.error || 'Error al generar el documento Word')
-      }
-
-      // Obtener el blob del documento Word
-      const blob = await response.blob()
-      
-      if (!blob || blob.size === 0) {
-        throw new Error('No se generó ningún documento')
-      }
-
-      console.log('📦 Blob recibido - Tipo:', blob.type, 'Tamaño:', blob.size, 'bytes')
-
-      // Obtener el nombre del archivo del header Content-Disposition
-      const contentDisposition = response.headers.get('Content-Disposition')
-      let fileName = `prompt-dinamico-${formData.unidad || '0'}-${Date.now()}.docx`
-      
-      if (contentDisposition) {
-        const matches = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/)
-        if (matches && matches[1]) {
-          fileName = decodeURIComponent(matches[1].replace(/['"]/g, ''))
-        }
-      }
-      
-      // Asegurar que el nombre del archivo termine en .docx
-      if (!fileName.toLowerCase().endsWith('.docx')) {
-        fileName = fileName.replace(/\.txt$/, '') + '.docx'
-      }
-      
-      console.log('📝 Nombre del archivo:', fileName)
-      
-      // Crear enlace de descarga con tipo MIME correcto
-      const url = window.URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.style.display = 'none'
-      a.download = fileName
-      a.type = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-      document.body.appendChild(a)
-      a.click()
-      
-      // Limpiar después
-      setTimeout(() => {
-        window.URL.revokeObjectURL(url)
-        if (document.body.contains(a)) {
-          document.body.removeChild(a)
-        }
-      }, 200)
-      
       console.log('✅ Descarga de Word del prompt dinámico iniciada')
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('❌ Error al generar el Word del prompt:', error)
-      alert(`Error al generar el Word del prompt: ${error.message || 'Error desconocido'}`)
+      const msg = error instanceof Error ? error.message : 'Error desconocido'
+      alert(`Error al generar el Word del prompt: ${msg}`)
     } finally {
       setLoading(false)
     }
@@ -1179,7 +1253,10 @@ function UnidadesAprendizajeContent() {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          formData: formData
+          formData: {
+            ...formData,
+            tituloUnidad: datosDesdePlanAnual.tituloUnidad || ''
+          }
         }),
       })
 
@@ -1320,10 +1397,22 @@ function UnidadesAprendizajeContent() {
                     onChange={(e) => {
                       const selectedArea = areas.find(a => a.id.toString() === e.target.value)
                       setAreaSeleccionada(selectedArea || null)
-                      setFormData({ 
-                        ...formData, 
-                        area: selectedArea?.descripcion || '', 
-                        areaId: e.target.value 
+                      const max = maxSesionesPorAreaDescripcion(
+                        selectedArea?.descripcion || ''
+                      )
+                      const n = parseInt(formData.numeroSesiones, 10)
+                      const numeroSesiones =
+                        !Number.isNaN(n) && n > max ? '' : formData.numeroSesiones
+                      const total = parseInt(numeroSesiones, 10)
+                      setFormData({
+                        ...formData,
+                        area: selectedArea?.descripcion || '',
+                        areaId: e.target.value,
+                        numeroSesiones,
+                        duracion:
+                          numeroSesiones && !Number.isNaN(total)
+                            ? etiquetaDuracionSesiones(total)
+                            : ''
                       })
                     }}
                     className={`${styles.select} ${bloqueadoPlan ? styles.fieldReadonly : ''}`}
@@ -1444,21 +1533,44 @@ function UnidadesAprendizajeContent() {
                 </div>
 
                 <div className={styles.formGroup}>
-                  <label htmlFor="duracion">Duración <span className={styles.required}>*</span></label>
+                  <label htmlFor="numeroSesiones">
+                    Número de sesiones <span className={styles.required}>*</span>
+                  </label>
                   <select
-                    id="duracion"
-                    value={formData.duracion}
-                    onChange={(e) => setFormData({ ...formData, duracion: e.target.value })}
+                    id="numeroSesiones"
+                    value={formData.numeroSesiones}
+                    onChange={(e) => {
+                      const value = e.target.value
+                      const n = parseInt(value, 10)
+                      setFormData({
+                        ...formData,
+                        numeroSesiones: value,
+                        duracion:
+                          value && !Number.isNaN(n)
+                            ? etiquetaDuracionSesiones(n)
+                            : ''
+                      })
+                    }}
                     className={styles.select}
                     required
+                    disabled={!formData.areaId}
                   >
-                    <option value="">Selecciona duración</option>
-                    <option value="1 semana">1 semana</option>
-                    <option value="2 semanas">2 semanas</option>
-                    <option value="3 semanas">3 semanas</option>
-                    <option value="4 semanas">4 semanas</option>
-                    <option value="5 semanas">5 semanas</option>
+                    <option value="">
+                      {formData.areaId
+                        ? 'Selecciona cantidad de sesiones'
+                        : 'Selecciona primero el área'}
+                    </option>
+                    {opcionesNumeroSesiones.map((n) => (
+                      <option key={n} value={String(n)}>
+                        {n} {n === 1 ? 'sesión' : 'sesiones'}
+                      </option>
+                    ))}
                   </select>
+                  {formData.areaId && (
+                    <p className={styles.helpText}>
+                      Máximo {maxSesionesArea} sesiones para esta área
+                    </p>
+                  )}
                 </div>
 
                 <div className={styles.formGroup}>
@@ -1470,11 +1582,7 @@ function UnidadesAprendizajeContent() {
                     onChange={(e) => setFormData({ ...formData, fechaInicio: e.target.value })}
                     className={styles.input}
                     required
-                    disabled={!formData.duracion}
                   />
-                  {!formData.duracion && (
-                    <p className={styles.helpText}>Selecciona primero la duración</p>
-                  )}
                 </div>
 
                 <div className={styles.formGroup}>
@@ -1483,16 +1591,16 @@ function UnidadesAprendizajeContent() {
                     id="fechaTermino"
                     type="date"
                     value={formData.fechaTermino}
-                    readOnly
-                    disabled
-                    className={`${styles.input} ${styles.fieldReadonly}`}
+                    onChange={(e) =>
+                      setFormData({ ...formData, fechaTermino: e.target.value })
+                    }
+                    className={styles.input}
                     required
-                    aria-label="Fecha de término calculada automáticamente"
+                    min={formData.fechaInicio || undefined}
+                    aria-label="Fecha de término de la unidad"
                   />
                   <p className={styles.helpText}>
-                    {formData.duracion && formData.fechaInicio
-                      ? `Calculada según ${formData.duracion} desde la fecha de inicio`
-                      : 'Se calculará al elegir duración y fecha de inicio'}
+                    Indica el último día de la unidad según tu calendario escolar
                   </p>
                 </div>
               </div>
@@ -1989,6 +2097,8 @@ function UnidadesAprendizajeContent() {
           </div>
         </div>
       )}
+
+      {AvisoModalEl}
     </>
   )
 }

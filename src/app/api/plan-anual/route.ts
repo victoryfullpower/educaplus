@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getUserId } from '@/lib/auth'
 import { enriquecerPlanesConEstado } from '@/lib/plan-estado-documentos'
+import { assertPuedeCrearPlanAnual } from '@/lib/limites-plan-anual'
 
 function normalizePlanIdField(v: unknown): string {
   if (v === undefined || v === null || v === '') return ''
@@ -79,6 +80,15 @@ export async function POST(request: NextRequest) {
           { status: 409 }
         )
       }
+
+      const limite = await assertPuedeCrearPlanAnual(userId)
+      if (!limite.ok) {
+        return NextResponse.json(
+          { error: limite.error, code: limite.code },
+          { status: 403 }
+        )
+      }
+
       planExistente = null
     }
 

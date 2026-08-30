@@ -2,8 +2,78 @@
 
 import Link from 'next/link'
 import Header from '@/components/Header'
-import { useState, useEffect } from 'react'
+import { useEffect, useState } from 'react'
+import { HerramientaIcon, type HerramientaIconName } from './crear-material-icons'
 import styles from './crear-material.module.css'
+
+const HERRAMIENTAS: {
+  href: string
+  title: string
+  description: string
+  icon: HerramientaIconName
+  fase?: string
+  destacado?: boolean
+}[] = [
+  {
+    href: '/servicios/crear-material/situaciones-significativas',
+    title: 'Situaciones significativas',
+    description: 'Diseña situaciones alineadas al currículo y competencias del MINEDU.',
+    icon: 'situacion'
+  },
+  {
+    href: '/servicios/crear-material/programacion-anual',
+    title: 'Programación anual',
+    description: 'Genera tu programación completa en un flujo guiado por fases.',
+    icon: 'programacion',
+    fase: '2 fases',
+    destacado: true
+  },
+  {
+    href: '/servicios/crear-material/unidades-aprendizaje',
+    title: 'Unidades de aprendizaje',
+    description: 'Crea unidades con secuencia, desempeños y criterios de evaluación.',
+    icon: 'unidades',
+    fase: '3 fases',
+    destacado: true
+  },
+  {
+    href: '/servicios/crear-material/sesiones-fichas',
+    title: 'Sesiones de aprendizaje',
+    description: 'Sesiones completas con fichas, listas de cotejo y rúbricas.',
+    icon: 'sesiones',
+    destacado: true
+  },
+  {
+    href: '/servicios/crear-material/ficha-aprendizaje',
+    title: 'Ficha de aprendizaje',
+    description: 'Genera la ficha de una sesión a partir de tu programación anual.',
+    icon: 'ficha'
+  },
+  {
+    href: '/servicios/crear-material/rubricas-solo',
+    title: 'Solo rúbricas',
+    description: 'Rúbricas analíticas personalizadas listas para evaluar.',
+    icon: 'rubricas'
+  },
+  {
+    href: '/servicios/crear-material/conclusiones',
+    title: 'Conclusiones descriptivas',
+    description: 'Redacta conclusiones descriptivas para el informe de tus estudiantes.',
+    icon: 'conclusiones'
+  },
+  {
+    href: '/servicios/crear-material/examenes',
+    title: 'Exámenes',
+    description: 'Elabora exámenes coherentes con tus competencias y desempeños.',
+    icon: 'examenes'
+  },
+  {
+    href: '/servicios/crear-material/probar-prompt',
+    title: 'Probar prompt',
+    description: 'Pega tu prompt, envíalo a GPT-4o-mini y ve la respuesta en un modal HTML.',
+    icon: 'prompt'
+  }
+]
 
 export default function CrearMaterialPage() {
   const [isAuthenticated, setIsAuthenticated] = useState(false)
@@ -15,14 +85,12 @@ export default function CrearMaterialPage() {
         const response = await fetch('/api/auth/check')
         const data = await response.json()
         setIsAuthenticated(data.authenticated || false)
-      } catch (error) {
-        console.error('Error al verificar autenticación:', error)
+      } catch {
         setIsAuthenticated(false)
       } finally {
         setLoading(false)
       }
     }
-
     checkAuth()
   }, [])
 
@@ -30,62 +98,78 @@ export default function CrearMaterialPage() {
     <>
       <Header />
       <main className={styles.main}>
-        <div className={styles.container}>
-          <h1 className={styles.title}>CREA TU MATERIAL CON IA</h1>
-          <p className={styles.subtitle}>
-            Tu programación, unidades, sesiones y fichas… en minutos, con el poder de la inteligencia artificial.
-          </p>
+        <section className={styles.hero}>
+          <div className={styles.heroGlow} aria-hidden />
+          <div className={styles.heroInner}>
+            <Link href="/servicios" className={styles.backLink}>
+              ← Volver a servicios
+            </Link>
+            <span className={styles.heroBadge}>Inteligencia artificial</span>
+            <h1 className={styles.heroTitle}>Crea tu material con IA</h1>
+            <p className={styles.heroSubtitle}>
+              Programación anual, unidades, sesiones, fichas, rúbricas y más — en minutos y
+              alineado al MINEDU.
+            </p>
+          </div>
+        </section>
 
+        <section className={styles.content}>
           {!loading && !isAuthenticated && (
-            <div className={styles.warningBox}>
-              <p>⚠️ <strong>Primero debes registrarte o iniciar sesión</strong> para usar esta herramienta.</p>
+            <div className={styles.authBanner} role="alert">
+              <svg
+                className={styles.authBannerIcon}
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                aria-hidden
+              >
+                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+              </svg>
+              <div className={styles.authBannerText}>
+                <strong>Inicia sesión para generar documentos</strong>
+                <p>Necesitas una cuenta activa y un plan con créditos disponibles.</p>
+              </div>
+              <div className={styles.authBannerActions}>
+                <Link href="/login" className={styles.authBtnSecondary}>
+                  Iniciar sesión
+                </Link>
+                <Link href="/register" className={styles.authBtnPrimary}>
+                  Crear cuenta
+                </Link>
+              </div>
             </div>
           )}
 
           <div className={styles.optionsGrid}>
-            <Link href="/servicios/crear-material/situaciones-significativas" className={styles.optionCard}>
-              <h2>CREAR TU SITUACIONES SIGNIFICATIVAS</h2>
-              <p>Crea situaciones significativas alineadas al MINEDU</p>
-            </Link>
-
-            <Link href="/servicios/crear-material/programacion-anual" className={styles.optionCard}>
-              <h2>CREAR PROGRAMACIÓN ANUAL</h2>
-              <p>Genera tu programación anual completa en 2 fases</p>
-            </Link>
-
-            <Link href="/servicios/crear-material/unidades-aprendizaje" className={styles.optionCard}>
-              <h2>CREAR UNIDADES DE APRENDIZAJE</h2>
-              <p>Crea unidades de aprendizaje personalizadas en 3 fases</p>
-            </Link>
-
-            <Link href="/servicios/crear-material/sesiones-fichas" className={styles.optionCard}>
-              <h2>CREAR SESIONES</h2>
-              <p>Genera sesiones completas con fichas y rúbricas</p>
-            </Link>
-
-            <Link href="/servicios/crear-material/ficha-aprendizaje" className={styles.optionCard}>
-              <h2>CREAR FICHA DE APRENDIZAJE</h2>
-              <p>Genera la ficha de una sesión desde tu programación anual</p>
-            </Link>
-
-            <Link href="/servicios/crear-material/conclusiones" className={styles.optionCard}>
-              <h2>CONCLUSIONES DESCRIPTIVAS</h2>
-              <p>Genera conclusiones descriptivas para tus estudiantes</p>
-            </Link>
-
-            <Link href="/servicios/crear-material/examenes" className={styles.optionCard}>
-              <h2>EXÁMENES</h2>
-              <p>Crea exámenes alineados al currículo</p>
-            </Link>
-
-            <Link href="/servicios/crear-material/rubricas-solo" className={styles.optionCard}>
-              <h2>CREAR SOLO RÚBRICAS</h2>
-              <p>Genera rúbricas analíticas personalizadas</p>
-            </Link>
+            {HERRAMIENTAS.map((item) => (
+              <Link
+                key={item.href}
+                href={item.href}
+                className={`${styles.optionCard} ${item.destacado ? styles.optionCardFeatured : ''}`}
+              >
+                {item.fase && <span className={styles.faseBadge}>{item.fase}</span>}
+                <div className={styles.optionIconWrap}>
+                  <HerramientaIcon name={item.icon} />
+                </div>
+                <h2 className={styles.optionTitle}>{item.title}</h2>
+                <p className={styles.optionDescription}>{item.description}</p>
+                <span className={styles.optionCta}>
+                  Abrir herramienta
+                  <span className={styles.optionCtaArrow} aria-hidden>
+                    →
+                  </span>
+                </span>
+              </Link>
+            ))}
           </div>
-        </div>
+
+          <aside className={styles.footerCta}>
+            <p>¿Necesitas más créditos o regeneraciones?</p>
+            <Link href="/planes">Ver planes disponibles</Link>
+          </aside>
+        </section>
       </main>
     </>
   )
 }
-

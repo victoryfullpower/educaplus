@@ -12,11 +12,16 @@ model User {
   password           String
   name               String?
   rol                String               @default("Usuario") // "Administrador" o "Usuario"
+  trialPlanUsado     Boolean             @default(false) @map("trial_plan_usado")
+  trialUnidadUsada   Boolean             @default(false) @map("trial_unidad_usada")
+  trialSesionUsada   Boolean             @default(false) @map("trial_sesion_usada")
   createdAt          DateTime             @default(now())
   updatedAt          DateTime             @updatedAt
   id                 Int                  @id @default(autoincrement())
   planesAnuales      PlanAnual[]
   unidadesAprendizaje UnidadAprendizaje[]
+  ordenesCompra      OrdenCompra[]
+  suscripciones      SuscripcionUsuario[]
 }
 
 model Area {
@@ -25,6 +30,7 @@ model Area {
   sesionx2           Boolean?            @default(false)
   competencias       Competencia[]
   procesosDidacticos ProcesoDidactico[]
+  sugerenciasProducto SugerenciaProductoPlan[]
 
   @@map("area")
 }
@@ -279,6 +285,7 @@ model Sesion {
   desarrollodurante  String? @db.Text
   desarrollodespues  String? @db.Text
   desarrollo         String? @db.Text
+  metacognicion      String? @db.Text
 
   createdAt               DateTime @default(now()) @map("created_at")
   updatedAt               DateTime @updatedAt @map("updated_at")
@@ -286,6 +293,7 @@ model Sesion {
   unidadAprendizaje UnidadAprendizaje @relation(fields: [idunidadaprendizaje], references: [id], onDelete: Cascade)
   fichaAprendizaje   FichaAprendizaje?
   rubrica            Rubrica?
+  solucionario       Solucionario?
   listaCotejo        ListaCotejo?
 
   @@unique([idunidadaprendizaje, numeroSesion])
@@ -340,6 +348,21 @@ model FichaAprendizaje {
   @@map("fichaaprendizaje")
 }
 
+model Solucionario {
+  id              Int      @id @default(autoincrement())
+  idsesion        Int      @unique @map("idsesion")
+  area            String?  @db.Text
+  grado           String?  @db.Text
+  titulosesion    String?  @db.Text @map("titulosesion")
+  respuestaprompt String?  @db.Text @map("respuestaprompt")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  sesion Sesion @relation(fields: [idsesion], references: [id], onDelete: Cascade)
+
+  @@map("solucionario")
+}
+
 /** Instrumento de evaluación — Lista de cotejo (plantilla Word por sesión). */
 model ListaCotejo {
   id           Int      @id @default(autoincrement())
@@ -374,6 +397,25 @@ model Prompt {
   estado            String   @default("activo") // "activo" o "inactivo"
 
   @@map("prompt")
+}
+
+/** Sugerencias de problema/potencialidad y campo temático para plan anual */
+model SugerenciaProblemaPlan {
+  id          Int    @id @default(autoincrement())
+  descripcion String @db.Text
+
+  @@map("sugerencia_problema_plan")
+}
+
+/** Sugerencias de producto para plan anual (por área curricular) */
+model SugerenciaProductoPlan {
+  id          Int    @id @default(autoincrement())
+  descripcion String @db.Text
+  idarea      Int?
+  area        Area?  @relation(fields: [idarea], references: [id])
+
+  @@index([idarea])
+  @@map("sugerencia_producto_plan")
 }
 
 model AreaComercial {
@@ -444,4 +486,159 @@ model ValAct {
   actdemostrable   ActDemostrable @relation(fields: [idactdemostrable], references: [idactdemostrable])
 
   @@map("val_act")
+}
+
+/// Orden de compra creada desde /planes/comprar (alineada a Culqi)
+model OrdenCompra {
+  id                Int      @id @default(autoincrement())
+  idusuario         Int      @map("idusuario")
+  planCodigo        String?  @map("plan_codigo") // basico | premium | anual
+  vigencia          String   // mensual | anual
+  sesionesPorUnidad Int      @map("sesiones_por_unidad") // 5 o 10
+  cantidadGrados    Int      @map("cantidad_grados") // 1..5
+  monto             Decimal  @db.Decimal(10, 2)
+  moneda            String   @default("PEN")
+  estado            String   @default("pendiente") // pendiente | pagada | fallida | cancelada
+  culqiOrderId      String?  @map("culqi_order_id")
+  culqiChargeId     String?  @map("culqi_charge_id")
+  metadata          Json?
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  usuario       User                 @relation(fields: [idusuario], references: [id], onDelete: Cascade)
+  pagos         PagoCulqi[]
+  suscripciones SuscripcionUsuario[]
+
+  @@index([idusuario, estado])
+  @@index([culqiOrderId])
+  @@index([culqiChargeId])
+  @@map("orden_compra")
+}
+
+/// Eventos/cargos de Culqi asociados a una orden (auditoría de pagos)
+model PagoCulqi {
+  id            Int      @id @default(autoincrement())
+  idorden       Int      @map("idorden")
+  culqiId       String   @map("culqi_id")
+  estado        String   // captured | failed | refunded | etc.
+  metodo        String?  // tarjeta, yape, etc.
+  monto         Decimal  @db.Decimal(10, 2)
+  moneda        String   @default("PEN")
+  respuestaRaw  Json?    @map("respuesta_raw")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  orden OrdenCompra @relation(fields: [idorden], references: [id], onDelete: Cascade)
+
+  @@index([idorden])
+  @@unique([culqiId])
+  @@map("pago_culqi")
+}
+
+/// Acceso comercial activo del usuario (mensual/anual)
+model SuscripcionUsuario {
+  id                         Int      @id @default(autoincrement())
+  idusuario                  Int      @map("idusuario")
+  idorden                    Int?     @map("idorden")
+  planCodigo                 String?  @map("plan_codigo") // basico | premium | anual
+  vigencia                   String   // mensual | anual
+  sesionesPorUnidad          Int      @map("sesiones_por_unidad") // 5 o 10
+  cantidadGrados             Int      @map("cantidad_grados") // 1..5
+  creditosRegeneracionTotal  Int      @default(0) @map("creditos_regeneracion_total")
+  creditosRegeneracionUsados Int      @default(0) @map("creditos_regeneracion_usados")
+  fechaInicio                DateTime @map("fecha_inicio")
+  fechaFin                   DateTime @map("fecha_fin")
+  estado                     String   @default("activa") // activa | pendiente_grados | vencida | cancelada
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  usuario User        @relation(fields: [idusuario], references: [id], onDelete: Cascade)
+  orden   OrdenCompra? @relation(fields: [idorden], references: [id], onDelete: SetNull)
+  grados  SuscripcionGrado[]
+
+  @@index([idusuario, estado, fechaFin])
+  @@index([idorden])
+  @@map("suscripcion_usuario")
+}
+
+/// Grados/áreas habilitados por suscripción pagada
+model SuscripcionGrado {
+  id             Int      @id @default(autoincrement())
+  idsuscripcion  Int      @map("idsuscripcion")
+  areaId         String   @map("area_id")
+  gradoId        String   @map("grado_id")
+  nivelId        String?  @map("nivel_id")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  suscripcion SuscripcionUsuario @relation(fields: [idsuscripcion], references: [id], onDelete: Cascade)
+
+  @@unique([idsuscripcion, areaId, gradoId], name: "suscripcion_area_grado_unico")
+  @@index([areaId, gradoId])
+  @@map("suscripcion_grado")
+}
+
+/// Registro de cada operación de sellado (código + fecha) en /sello-documentos
+model RegistroSelloDocumento {
+  id               Int      @id @default(autoincrement())
+  codigoeducaplus  String   @map("codigoeducaplus")
+  cantidadArchivos Int      @default(1) @map("cantidad_archivos")
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  @@index([codigoeducaplus])
+  @@index([createdAt])
+  @@map("registro_sello_documento")
+}
+
+/// Catálogo comercial Básico / Premium / Anual (precio, restricciones, textos UI)
+model PlanCatalogo {
+  id                   Int      @id @default(autoincrement())
+  codigo               String   @unique @map("codigo")
+  nombre               String
+  precio               Decimal  @db.Decimal(10, 2)
+  periodo              String   // mes | anual
+  vigencia             String   // mensual | anual
+  sesionesPorUnidad    Int      @map("sesiones_por_unidad")
+  creditosRegeneracion Int      @map("creditos_regeneracion")
+  creditosEtiqueta     String   @map("creditos_etiqueta")
+  maxParesAreaGrado    Int      @map("max_pares_area_grado")
+  generacionTitulo     String   @map("generacion_titulo")
+  destacado            String?
+  etiqueta             String?
+  cta                  String
+  tema                 String   @default("azul")
+  notaUsoJusto         String?  @map("nota_uso_justo")
+  orden                Int      @default(0)
+  estado               String   @default("activo")
+  createdAt            DateTime @default(now()) @map("created_at")
+  updatedAt            DateTime @updatedAt @map("updated_at")
+
+  items   PlanCatalogoItem[]
+  limites PlanCatalogoLimite[]
+
+  @@map("plan_catalogo")
+}
+
+model PlanCatalogoItem {
+  id             Int          @id @default(autoincrement())
+  idPlanCatalogo Int          @map("id_plan_catalogo")
+  tipo           String       // generacion | beneficio
+  texto          String
+  orden          Int          @default(0)
+
+  plan PlanCatalogo @relation(fields: [idPlanCatalogo], references: [id], onDelete: Cascade)
+
+  @@index([idPlanCatalogo, tipo, orden])
+  @@map("plan_catalogo_item")
+}
+
+model PlanCatalogoLimite {
+  id             Int          @id @default(autoincrement())
+  idPlanCatalogo Int          @map("id_plan_catalogo")
+  tipoDocumento  String       @map("tipo_documento")
+  limiteMensual  Int?         @map("limite_mensual")
+  limiteAnual    Int?         @map("limite_anual")
+
+  plan PlanCatalogo @relation(fields: [idPlanCatalogo], references: [id], onDelete: Cascade)
+
+  @@unique([idPlanCatalogo, tipoDocumento])
+  @@map("plan_catalogo_limite")
 }

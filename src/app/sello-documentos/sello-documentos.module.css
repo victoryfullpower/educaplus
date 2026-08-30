@@ -9,6 +9,10 @@
   margin: 0 auto;
 }
 
+.containerWide {
+  max-width: 1100px;
+}
+
 .hero {
   text-align: center;
   margin-bottom: 28px;
@@ -39,9 +43,21 @@
 
 .tabs {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(5, 1fr);
   border-bottom: 1px solid #e2e8f0;
   background: #f8fafc;
+}
+
+@media (max-width: 900px) {
+  .tabs {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 520px) {
+  .tabs {
+    grid-template-columns: 1fr;
+  }
 }
 
 .tab {
@@ -166,6 +182,26 @@
   background: #f1f5f9;
 }
 
+.previewCodigos {
+  margin: 0 0 16px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: #eef2ff;
+  border: 1px solid #c7d2fe;
+  color: #4338ca;
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
+.fileListTitle {
+  margin: 0 0 8px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
 .fileList {
   list-style: none;
   margin: 0 0 16px;
@@ -176,6 +212,11 @@
   border-radius: 8px;
 }
 
+.fileListAdjuntos {
+  border-color: #c7d2fe;
+  background: #f8faff;
+}
+
 .fileList li {
   padding: 8px 12px;
   font-size: 0.88rem;
@@ -184,6 +225,16 @@
   display: flex;
   justify-content: space-between;
   gap: 8px;
+  align-items: center;
+}
+
+.fileName {
+  color: #334155;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .fileList li:last-child {
@@ -255,6 +306,137 @@
   opacity: 0.55;
 }
 
+.modalOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(15, 23, 42, 0.55);
+  backdrop-filter: blur(3px);
+}
+
+.modalDialog {
+  background: #fff;
+  border-radius: 16px;
+  padding: 0;
+  max-width: 440px;
+  width: 100%;
+  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.22);
+  border: 1px solid #e2e8f0;
+  overflow: hidden;
+  animation: modalIn 0.2s ease-out;
+}
+
+@keyframes modalIn {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.modalHeader {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 22px 24px 0;
+}
+
+.modalIcon {
+  flex-shrink: 0;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.35rem;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.modalIconError {
+  background: #fef2f2;
+  color: #dc2626;
+  border: 1px solid #fecaca;
+}
+
+.modalIconWarn {
+  background: #fffbeb;
+  color: #d97706;
+  border: 1px solid #fde68a;
+}
+
+.modalIconInfo {
+  background: #eef2ff;
+  color: #4f46e5;
+  border: 1px solid #c7d2fe;
+}
+
+.modalTitles {
+  flex: 1;
+  min-width: 0;
+}
+
+.modalTitle {
+  margin: 0 0 4px;
+  font-size: 1.12rem;
+  font-weight: 800;
+  color: #1e293b;
+  line-height: 1.3;
+}
+
+.modalSubtitle {
+  margin: 0;
+  font-size: 0.82rem;
+  color: #64748b;
+  font-weight: 600;
+}
+
+.modalBody {
+  padding: 14px 24px 22px;
+}
+
+.modalMessage {
+  margin: 0;
+  font-size: 0.95rem;
+  color: #475569;
+  line-height: 1.55;
+}
+
+.modalFooter {
+  padding: 0 24px 22px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.modalBtnPrimary {
+  padding: 11px 22px;
+  border: none;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
+  color: #fff;
+  font-weight: 700;
+  font-size: 0.95rem;
+  cursor: pointer;
+  font-family: inherit;
+  min-width: 120px;
+}
+
+.modalBtnPrimary:hover {
+  opacity: 0.95;
+}
+
+.modalBtnDanger {
+  background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+}
+
 .loadingOverlay {
   position: fixed;
   inset: 0;
@@ -301,8 +483,39 @@
   line-height: 1.45;
 }
 
+.progressWrap {
+  width: 100%;
+  margin-top: 16px;
+}
+
+.progressBar {
+  height: 10px;
+  background: #e2e8f0;
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.progressBarFill {
+  height: 100%;
+  background: linear-gradient(90deg, #6366f1 0%, #4f46e5 100%);
+  border-radius: inherit;
+  transition: width 0.35s ease;
+}
+
+.progressLabel {
+  margin: 8px 0 0;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: #475569;
+  text-align: center;
+}
+
 .btnVerify {
   background: linear-gradient(135deg, #0d9488 0%, #0f766e 100%);
+}
+
+.btnProtect {
+  background: linear-gradient(135deg, #7c3aed 0%, #6d28d9 100%);
 }
 
 .alert {
@@ -388,7 +601,102 @@
   color: #b91c1c;
 }
 
+.filtersRow {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr auto;
+  gap: 12px;
+  align-items: end;
+  margin-bottom: 20px;
+}
+
+.filtersActions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.tableWrap {
+  overflow-x: auto;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  margin-bottom: 16px;
+}
+
+.dataTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.dataTable th,
+.dataTable td {
+  padding: 10px 14px;
+  text-align: left;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.dataTable th {
+  background: #f8fafc;
+  color: #475569;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  font-weight: 700;
+}
+
+.dataTable tbody tr:hover {
+  background: #f8fafc;
+}
+
+.dataTable tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.codigoCell {
+  font-weight: 600;
+  color: #4f46e5;
+  word-break: break-word;
+}
+
+.emptyState {
+  padding: 32px 16px;
+  text-align: center;
+  color: #64748b;
+  font-size: 0.92rem;
+}
+
+.pagination {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.paginationInfo {
+  font-size: 0.88rem;
+  color: #64748b;
+}
+
+.paginationBtns {
+  display: flex;
+  gap: 8px;
+}
+
+@media (max-width: 900px) {
+  .filtersRow {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .filtersActions {
+    grid-column: 1 / -1;
+  }
+}
+
 @media (max-width: 640px) {
+  .filtersRow {
+    grid-template-columns: 1fr;
+  }
   .formGrid {
     grid-template-columns: 1fr;
   }

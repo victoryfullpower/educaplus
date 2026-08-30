@@ -90,10 +90,20 @@ export async function POST(request: NextRequest) {
     console.log(`🧹 [LIMPIEZA] Contenido listo. Longitud: ${respuestaIACleanFinal.length} caracteres`)
 
     // Preparar los datos para reemplazar en la plantilla
+    const listaCampos =
+      Array.isArray(unidadData?.camposTematicos) && unidadData.camposTematicos.length > 0
+        ? unidadData.camposTematicos
+            .map((t: string) => String(t).trim())
+            .filter(Boolean)
+            .map((t: string) => `- ${t}`)
+            .join('\n')
+        : String(unidadData?.campotematico || unidadData?.campoTematico || '').trim()
+
     const templateData = {
       problemapotencialidad0: unidadData?.problemaPotencialidad || '',
       situacionsignificativa0: respuestaIACleanFinal, // Usar la respuesta sin el título y sin saltos de línea
-      titulosituacionsignificativa0: tituloExtraido
+      titulosituacionsignificativa0: String(tituloExtraido || '').trim(),
+      campotematico0: listaCampos
     }
     
     const tiempoExtraccionTitulo = ((Date.now() - tiempoReemplazoInicio) / 1000).toFixed(2)

@@ -17,7 +17,7 @@ import { descargarPlanAnual as exportarPlanAnualDocx } from '@/lib/home-descarga
 import {
   DocumentosStepper,
   StepModalDocumentos,
-  PASOS_DOCUMENTOS,
+  PASOS_STEPPER,
   type PasoKey,
   type DocumentosPlanResponse
 } from './StepModalDocumentos'
@@ -77,6 +77,13 @@ function HomeContent() {
   const [modalBloqueo, setModalBloqueo] = useState<string | null>(null)
   const [modalDatos, setModalDatos] = useState<DocumentosPlanResponse | null>(null)
   const [modalUnidadTab, setModalUnidadTab] = useState<string | null>(null)
+  const [cuotaPlanAnual, setCuotaPlanAnual] = useState<{
+    limite: number | null
+    usados: number
+    restantes: number | null
+    puedeCrear: boolean
+    mensaje: string | null
+  } | null>(null)
   const retornoModalProcesadoRef = useRef(false)
   const bloquearReabrirModalRef = useRef(false)
 
@@ -110,7 +117,8 @@ function HomeContent() {
           sesiones: data.sesiones ?? [],
           fichas: data.fichas ?? [],
           rubricas: data.rubricas ?? [],
-          listasCotejo: data.listasCotejo ?? []
+          listasCotejo: data.listasCotejo ?? [],
+          solucionarios: data.solucionarios ?? []
         })
       }
     } catch (e) {
@@ -167,7 +175,8 @@ function HomeContent() {
             sesiones: data.sesiones ?? [],
             fichas: data.fichas ?? [],
             rubricas: data.rubricas ?? [],
-            listasCotejo: data.listasCotejo ?? []
+            listasCotejo: data.listasCotejo ?? [],
+          solucionarios: data.solucionarios ?? []
           })
         }
       } catch (e) {
@@ -185,12 +194,12 @@ function HomeContent() {
       if (!estado) return
 
       for (let i = 0; i < index; i++) {
-        const prev = PASOS_DOCUMENTOS[i]
+        const prev = PASOS_STEPPER[i]
         if (!estado[prev.key]) {
           setModalPlan(plan)
           setModalPaso(paso)
           setModalBloqueo(
-            `Aún no has registrado el paso anterior: ${prev.label}. Complétalo antes de continuar con ${PASOS_DOCUMENTOS.find((p) => p.key === paso)?.label ?? paso}.`
+            `Aún no has registrado el paso anterior: ${prev.label}. Complétalo antes de continuar con ${PASOS_STEPPER.find((p) => p.key === paso)?.label ?? paso}.`
           )
           setModalDatos(null)
           setModalCargando(false)
@@ -216,7 +225,8 @@ function HomeContent() {
             sesiones: data.sesiones ?? [],
             fichas: data.fichas ?? [],
             rubricas: data.rubricas ?? [],
-            listasCotejo: data.listasCotejo ?? []
+            listasCotejo: data.listasCotejo ?? [],
+          solucionarios: data.solucionarios ?? []
           })
         }
       } catch (e) {
@@ -253,12 +263,21 @@ function HomeContent() {
           return
         }
 
-        // Si es Usuario, cargar sus planes anuales
+        // Si es Usuario, cargar sus planes anuales y cuotas
         if (authData.user?.rol === 'Usuario') {
-          const planesResponse = await fetch('/api/plan-anual')
+          const [planesResponse, accesoResponse] = await Promise.all([
+            fetch('/api/plan-anual'),
+            fetch('/api/usuario/acceso')
+          ])
           if (planesResponse.ok) {
             const planesData = await planesResponse.json()
             setPlanesAnuales(planesData.planesAnuales || [])
+          }
+          if (accesoResponse.ok) {
+            const accesoData = await accesoResponse.json()
+            if (accesoData.cuotaPlanAnual) {
+              setCuotaPlanAnual(accesoData.cuotaPlanAnual)
+            }
           }
         }
       } catch (error) {
@@ -344,6 +363,7 @@ function HomeContent() {
   ])
 
   const planesAreaActiva = areaActiva ? planesPorArea[areaActiva] ?? [] : []
+  const puedeCrearPlanAnual = cuotaPlanAnual?.puedeCrear !== false
 
   if (loading) {
     return (
@@ -366,13 +386,25 @@ function HomeContent() {
       <div className={styles.container}>
         <div className={styles.header}>
           <h1 className={styles.title}>Mis Documentos Generados</h1>
-          <Link
-            href="/servicios/crear-material/programacion-anual"
-            className={styles.newPlanButton}
-          >
-            ➕ Nuevo plan anual
-          </Link>
+          {puedeCrearPlanAnual ? (
+            <Link
+              href="/servicios/crear-material/programacion-anual"
+              className={styles.newPlanButton}
+            >
+              ➕ Nuevo plan anual
+            </Link>
+          ) : (
+            <span
+              className={`${styles.newPlanButton} ${styles.newPlanButtonDisabled}`}
+              title={cuotaPlanAnual?.mensaje ?? 'Límite alcanzado'}
+            >
+              ➕ Nuevo plan anual
+            </span>
+          )}
         </div>
+        {!puedeCrearPlanAnual && cuotaPlanAnual?.mensaje && (
+          <p className={styles.cuotaLimiteMsg}>{cuotaPlanAnual.mensaje}</p>
+        )}
         <div className={styles.content}>
           {areasOrdenadas.length === 0 ? (
             <div className={styles.card}>
@@ -382,7 +414,11 @@ function HomeContent() {
               </p>
               <Link
                 href="/servicios/crear-material/programacion-anual"
-                className={styles.newPlanButtonCard}
+                className={`${styles.newPlanButtonCard} ${puedeCrearPlanAnual ? '' : styles.newPlanButtonDisabled}`}
+                aria-disabled={!puedeCrearPlanAnual}
+                onClick={(e) => {
+                  if (!puedeCrearPlanAnual) e.preventDefault()
+                }}
               >
                 ➕ Crear mi primer plan anual
               </Link>

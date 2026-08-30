@@ -62,7 +62,8 @@ export async function GET(request: NextRequest) {
       sesion.desarrollo != null ||
       sesion.desarrolloantes != null ||
       sesion.desarrollodurante != null ||
-      sesion.desarrollodespues != null
+      sesion.desarrollodespues != null ||
+      sesion.metacognicion != null
 
     if (!tieneContenido) {
       return NextResponse.json({ existe: false })
@@ -79,7 +80,8 @@ export async function GET(request: NextRequest) {
         desarrollo: sesion.desarrollo ?? '',
         desarrolloantes: sesion.desarrolloantes ?? '',
         desarrollodurante: sesion.desarrollodurante ?? '',
-        desarrollodespues: sesion.desarrollodespues ?? ''
+        desarrollodespues: sesion.desarrollodespues ?? '',
+        metacognicion: sesion.metacognicion ?? ''
       }
     })
   } catch (error) {
