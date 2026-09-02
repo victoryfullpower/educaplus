@@ -4,6 +4,10 @@ export const MSG_CODIGO_SELLO_DUPLICADO =
 /** Máximo de archivos .docx / .pdf por lote en /api/sello-documentos/batch */
 export const MAX_ARCHIVOS_LOTE_SELLO = 350
 
+/** Tamaño máximo por documento .docx / .pdf al sellar (MB) */
+export const MAX_FILE_MB_SELLO = 100
+export const MAX_FILE_BYTES_SELLO = MAX_FILE_MB_SELLO * 1024 * 1024
+
 /** Máximo de copias correlativas en sellado masivo */
 export const MAX_COPIAS_MASIVO_SELLO = 50
 

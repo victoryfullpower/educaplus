@@ -1,9 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { extensionSello, leerSelloArchivo } from '@/lib/documento-sello'
+import {
+  MAX_FILE_BYTES_SELLO,
+  MAX_FILE_MB_SELLO
+} from '@/lib/sello-documento-constants'
 
 export const dynamic = 'force-dynamic'
-
-const MAX_FILE_BYTES = 40 * 1024 * 1024
 
 export async function POST(request: NextRequest) {
   try {
@@ -25,9 +27,9 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    if (archivo.size > MAX_FILE_BYTES) {
+    if (archivo.size > MAX_FILE_BYTES_SELLO) {
       return NextResponse.json(
-        { error: 'El archivo supera el límite de 40 MB' },
+        { error: `El archivo supera el límite de ${MAX_FILE_MB_SELLO} MB` },
         { status: 400 }
       )
     }

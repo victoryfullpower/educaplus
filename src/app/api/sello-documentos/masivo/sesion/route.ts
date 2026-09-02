@@ -2,7 +2,9 @@ import { NextRequest, NextResponse } from 'next/server'
 import { extensionSello } from '@/lib/documento-sello'
 import {
   esAdjuntoSello,
-  MAX_ARCHIVOS_LOTE_SELLO
+  MAX_ARCHIVOS_LOTE_SELLO,
+  MAX_FILE_BYTES_SELLO,
+  MAX_FILE_MB_SELLO
 } from '@/lib/sello-documento-constants'
 import {
   crearSesionMasivo,
@@ -13,7 +15,6 @@ export const dynamic = 'force-dynamic'
 export const maxDuration = 300
 
 const MAX_FILES = MAX_ARCHIVOS_LOTE_SELLO
-const MAX_FILE_BYTES = 40 * 1024 * 1024
 const MAX_ADJUNTO_BYTES = 150 * 1024 * 1024
 
 export async function POST(request: NextRequest) {
@@ -45,8 +46,8 @@ export async function POST(request: NextRequest) {
         errores.push(`${nombre}: solo .docx o .pdf`)
         continue
       }
-      if (archivo.size > MAX_FILE_BYTES) {
-        errores.push(`${nombre}: supera 40 MB`)
+      if (archivo.size > MAX_FILE_BYTES_SELLO) {
+        errores.push(`${nombre}: supera ${MAX_FILE_MB_SELLO} MB`)
         continue
       }
       cargados.push({
