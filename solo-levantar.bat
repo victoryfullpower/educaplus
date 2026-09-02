@@ -38,7 +38,7 @@ if not exist "node_modules\" (
     )
 )
 
-echo [INFO] Iniciando servidor en http://localhost:3000
+echo [INFO] Iniciando servidor en http://localhost:3001
 echo [INFO] Para detener, ejecuta stop-server.bat o cierra esta ventana.
 echo.
 

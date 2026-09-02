@@ -33,7 +33,7 @@ if (-not (Test-Path (Join-Path $projectPath '.next'))) {
 
 Set-Location $projectPath
 Write-Ok "[INFO] Proyecto: $projectPath"
-Write-Ok '[INFO] Iniciando servidor en http://localhost:3000'
+Write-Ok '[INFO] Iniciando servidor en http://localhost:3001'
 Write-Host ''
 
 npm start

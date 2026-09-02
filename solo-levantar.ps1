@@ -42,7 +42,7 @@ if (-not (Test-Path 'node_modules')) {
     }
 }
 
-Write-Ok '[INFO] Iniciando servidor en http://localhost:3000'
+Write-Ok '[INFO] Iniciando servidor en http://localhost:3001'
 Write-Info '[INFO] Para detener, ejecuta stop-server.bat o cierra esta ventana.'
 Write-Host ''
 
