@@ -1,4 +1,7 @@
 import type { NextConfig } from 'next'
+import { loadEnvConfig } from '@next/env'
+
+loadEnvConfig(process.cwd())
 
 // Configuración para desarrollo (con soporte para rutas API)
 // Para exportación estática, usar: npm run build:static
