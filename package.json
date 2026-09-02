@@ -3,10 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev -p 3000",
+    "dev": "next dev -p 3001",
     "build": "prisma generate && next build",
     "build:static": "node scripts/build-static.js",
-    "start": "next start -p 3000",
+    "start": "next start -p 3001",
     "lint": "eslint",
     "postinstall": "prisma generate",
     "import:excel": "tsx scripts/import-excel.ts",
