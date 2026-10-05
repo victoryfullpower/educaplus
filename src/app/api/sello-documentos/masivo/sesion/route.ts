@@ -92,8 +92,16 @@ export async function POST(request: NextRequest) {
     })
   } catch (error) {
     console.error('sello-documentos/masivo/sesion POST:', error)
+    const msg =
+      error instanceof Error ? error.message : 'Error al preparar la sesión de sellado masivo'
+    const cuerpoBloqueado = msg.includes('disturbed') || msg.includes('locked')
     return NextResponse.json(
-      { error: 'Error al preparar la sesión de sellado masivo' },
+      {
+        error: cuerpoBloqueado
+          ? 'No se pudo leer la carpeta subida (error del servidor al procesar la petición). Reinicia el servidor de desarrollo e intenta de nuevo; si persiste, reduce archivos por lote.'
+          : 'Error al preparar la sesión de sellado masivo',
+        detalle: process.env.NODE_ENV === 'development' ? msg : undefined
+      },
       { status: 500 }
     )
   }

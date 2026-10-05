@@ -44,6 +44,8 @@ export function proxy(request: NextRequest) {
 
 export const config = {
   matcher: [
-    '/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)'
+    // Excluir APIs de sellado con multipart grande: el proxy de Next 16 puede bloquear
+    // el body antes de request.formData() ("Response body object should not be disturbed or locked").
+    '/((?!_next/static|_next/image|favicon.ico|api/sello-documentos|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)'
   ]
 }
