@@ -1,4 +1,5 @@
 import OpenAI from 'openai'
+import { propagarErrorOpenAiSdk } from '@/lib/openai-errors'
 import { getPromptByDescripcion, buildPromptFromText } from './prompt-helpers'
 
 export async function generateCampoTematico(
@@ -146,7 +147,12 @@ export async function generateCampoTematico(
       requestConfig.temperature = 0.7
     }
     
-    const completion = await openaiClient.chat.completions.create(requestConfig)
+    let completion
+    try {
+      completion = await openaiClient.chat.completions.create(requestConfig)
+    } catch (sdkError) {
+      propagarErrorOpenAiSdk(sdkError)
+    }
     respuestaIA = completion.choices[0]?.message?.content || ''
     
     console.log('📥 [DEBUG generateCampoTematico] Respuesta de OpenAI:', {

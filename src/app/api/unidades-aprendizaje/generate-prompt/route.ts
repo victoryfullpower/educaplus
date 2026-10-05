@@ -9,6 +9,11 @@ import {
   generarMatrizTexto
 } from '@/lib/matriz-unidad-prompt'
 import {
+  errorOpenAiSinSaldo,
+  esCuerpoOpenAiSinSaldo,
+  responderErrorApiCatch
+} from '@/lib/openai-errors'
+import {
   nombreAreaDesdeForm,
   resolverPromptUnidadPorArea
 } from '@/lib/prompt-unidad-por-area'
@@ -244,9 +249,18 @@ export async function POST(request: NextRequest) {
           break
         }
         
-        // Si no es exitosa pero no es un error de timeout, lanzar el error
+        const bodyErr = await openaiResponse.clone().json().catch(() => ({}))
+        if (esCuerpoOpenAiSinSaldo(bodyErr)) {
+          throw errorOpenAiSinSaldo()
+        }
+
         if (attempt === maxRetries) {
-          throw new Error(`OpenAI API error: ${openaiResponse.status} ${openaiResponse.statusText}`)
+          const detalle =
+            (bodyErr as { error?: { message?: string } })?.error?.message ||
+            openaiResponse.statusText
+          throw new Error(
+            `OpenAI API error: ${openaiResponse.status} ${openaiResponse.statusText} - ${detalle}`
+          )
         }
         
         // Esperar antes de reintentar (backoff exponencial)
@@ -303,6 +317,9 @@ export async function POST(request: NextRequest) {
       }
       const errorData = await openaiResponse.json().catch(() => ({}))
       console.error('❌ Error al obtener respuesta de GPT:', errorData)
+      if (esCuerpoOpenAiSinSaldo(errorData)) {
+        throw errorOpenAiSinSaldo()
+      }
       return NextResponse.json(
         { error: `Error al comunicarse con GPT: ${errorData.error?.message || openaiResponse.statusText}` },
         { status: openaiResponse.status }
@@ -628,15 +645,9 @@ export async function POST(request: NextRequest) {
       },
     })
 
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('❌ Error al generar texto por prompt:', error)
-    return NextResponse.json(
-      { 
-        error: 'Error al generar el texto por prompt', 
-        details: process.env.NODE_ENV === 'development' ? error.message : undefined 
-      },
-      { status: 500 }
-    )
+    return responderErrorApiCatch(error, 'Error al generar el texto por prompt')
   }
 }
 

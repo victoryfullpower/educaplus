@@ -5,6 +5,7 @@ import OpenAI from 'openai'
 import Docxtemplater from 'docxtemplater'
 import PizZip from 'pizzip'
 import { getUserId } from '@/lib/auth'
+import { responderErrorApiCatch } from '@/lib/openai-errors'
 import { prisma } from '@/lib/prisma'
 import {
   consumirCreditoRegeneracion,
@@ -276,13 +277,6 @@ Criterios: ${(sesion.criterios ?? '').replace(/<br\s*\/?>/gi, '\n')}`
     })
   } catch (error) {
     console.error('Error en generate-document-solucionario:', error)
-    const msg = error instanceof Error ? error.message : 'Error desconocido'
-    return NextResponse.json(
-      {
-        error: 'Error al generar el solucionario',
-        details: process.env.NODE_ENV === 'development' ? msg : undefined
-      },
-      { status: 500 }
-    )
+    return responderErrorApiCatch(error, 'Error al generar el solucionario')
   }
 }

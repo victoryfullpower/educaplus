@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import OpenAI from 'openai'
 import { getUserId } from '@/lib/auth'
+import { responderErrorApiCatch } from '@/lib/openai-errors'
 import { prisma } from '@/lib/prisma'
 import { construirWordDesdeRespuestaGpt } from '@/lib/respuesta-prompt-word'
 import {
@@ -225,13 +226,6 @@ export async function POST(request: NextRequest) {
     })
   } catch (error) {
     console.error('Error en generate-conclusiones:', error)
-    const msg = error instanceof Error ? error.message : 'Error desconocido'
-    return NextResponse.json(
-      {
-        error: 'Error al generar las conclusiones descriptivas',
-        details: process.env.NODE_ENV === 'development' ? msg : undefined
-      },
-      { status: 500 }
-    )
+    return responderErrorApiCatch(error, 'Error al generar las conclusiones descriptivas')
   }
 }

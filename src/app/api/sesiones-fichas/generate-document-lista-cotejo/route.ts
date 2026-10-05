@@ -8,6 +8,7 @@ import { prisma } from '@/lib/prisma'
 import { datosListaCotejoDesdeSesion } from '@/lib/lista-cotejo-sesion'
 import { tieneSuscripcionActivaPara } from '@/lib/acceso-usuario'
 import { MSG_TRIAL_FICHA_COTEJO_REQUIERE_PLAN } from '@/lib/acceso-trial'
+import { responderErrorApiCatch } from '@/lib/openai-errors'
 
 export const dynamic = 'force-dynamic'
 
@@ -127,14 +128,6 @@ export async function POST(request: NextRequest) {
     })
   } catch (error) {
     console.error('Error en generate-document-lista-cotejo:', error)
-    const msg = error instanceof Error ? error.message : 'Error desconocido'
-    return NextResponse.json(
-      {
-        error: 'Error al generar la lista de cotejo',
-        details:
-          process.env.NODE_ENV === 'development' ? msg : undefined
-      },
-      { status: 500 }
-    )
+    return responderErrorApiCatch(error, 'Error al generar la lista de cotejo')
   }
 }

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { responderErrorApiCatch } from '@/lib/openai-errors'
 import fs from 'fs'
 import path from 'path'
 import OpenAI from 'openai'
@@ -170,28 +171,10 @@ export async function POST(request: NextRequest) {
         'Content-Disposition': `attachment; filename="${fileName}"`,
       },
     })
-  } catch (error: any) {
+  } catch (error: unknown) {
     const tiempoError = ((Date.now() - tiempoInicio) / 1000).toFixed(2)
     console.error(`❌ [ERROR] Falló después de ${tiempoError}s:`, error)
-    console.error('Error al generar la situación significativa:', error)
-    
-    let errorMessage = 'Error al generar el documento'
-    let errorDetails = ''
-    
-    if (error instanceof Error) {
-      errorMessage = error.message
-      if (error.stack && process.env.NODE_ENV === 'development') {
-        errorDetails = error.stack
-      }
-    }
-    
-    return NextResponse.json(
-      { 
-        error: errorMessage,
-        details: process.env.NODE_ENV === 'development' ? errorDetails : undefined
-      },
-      { status: 500 }
-    )
+    return responderErrorApiCatch(error, 'Error al generar la situación significativa')
   }
 }
 

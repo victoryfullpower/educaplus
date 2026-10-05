@@ -4,6 +4,8 @@ import { Suspense, useState, useEffect } from 'react'
 import { useSearchParams } from 'next/navigation'
 import Header from '@/components/Header'
 import styles from './ficha-aprendizaje.module.css'
+import { errorDesdeResponse } from '@/lib/error-generacion-documento'
+import { useAvisoModal } from '@/hooks/useAvisoModal'
 
 type PlanAnual = {
   id: number
@@ -42,6 +44,9 @@ type UnidadAprendizaje = {
 }
 
 function FichaAprendizajeContent() {
+  const { manejarErrorGeneracion, AvisoModalEl } = useAvisoModal(
+    'EducaPlus · Ficha de aprendizaje'
+  )
   const searchParams = useSearchParams()
   const planIdParam = searchParams.get('planId')
   const unidadNumParam = searchParams.get('unidad')
@@ -275,8 +280,7 @@ function FichaAprendizajeContent() {
         body: JSON.stringify({ sesionId: sesionSeleccionada.id, formato: 'json' })
       })
       if (!response.ok) {
-        const err = await response.json()
-        throw new Error(err.error || 'Error al generar el documento')
+        throw await errorDesdeResponse(response, 'Error al generar el documento')
       }
       const data = await response.json()
       const descargarBase64 = (docxBase64: string, fileName: string) => {
@@ -311,7 +315,7 @@ function FichaAprendizajeContent() {
       }
     } catch (e) {
       console.error(e)
-      alert(e instanceof Error ? e.message : 'Error al generar el documento.')
+      manejarErrorGeneracion(e)
     } finally {
       setLoading(false)
     }
@@ -359,8 +363,7 @@ function FichaAprendizajeContent() {
         body: JSON.stringify({ sesionId: sesionSeleccionada.id })
       })
       if (!response.ok) {
-        const err = await response.json()
-        throw new Error(err.error || 'Error al generar el prompt')
+        throw await errorDesdeResponse(response, 'Error al generar el prompt')
       }
       const blob = await response.blob()
       const url = window.URL.createObjectURL(blob)
@@ -373,7 +376,7 @@ function FichaAprendizajeContent() {
       window.URL.revokeObjectURL(url)
     } catch (e) {
       console.error(e)
-      alert(e instanceof Error ? e.message : 'Error al generar el documento de prompt.')
+      manejarErrorGeneracion(e)
     } finally {
       setLoadingPrompt(false)
     }
@@ -389,8 +392,7 @@ function FichaAprendizajeContent() {
         body: JSON.stringify({ sesionId: sesionSeleccionada.id, includePreviewImage: true })
       })
       if (!response.ok) {
-        const err = await response.json()
-        throw new Error(err.error || 'Error al generar la respuesta del prompt')
+        throw await errorDesdeResponse(response, 'Error al generar la respuesta del prompt')
       }
       const contentType = response.headers.get('Content-Type') || ''
       if (contentType.includes('application/json')) {
@@ -433,7 +435,7 @@ function FichaAprendizajeContent() {
       }
     } catch (e) {
       console.error(e)
-      alert(e instanceof Error ? e.message : 'Error al generar la respuesta del prompt.')
+      manejarErrorGeneracion(e)
     } finally {
       setLoadingRespuestaPrompt(false)
     }
@@ -447,8 +449,7 @@ function FichaAprendizajeContent() {
       body: JSON.stringify({ sesionId: sesionSeleccionada.id })
     })
     if (!response.ok) {
-      const err = await response.json()
-      throw new Error(err.error || 'Error al generar la comparación de prompts')
+      throw await errorDesdeResponse(response, 'Error al generar la comparación de prompts')
     }
     const data = await response.json()
     const resultados = Array.isArray(data.resultados) ? data.resultados : []
@@ -476,7 +477,7 @@ function FichaAprendizajeContent() {
       await descargarRespuestasTresPrompts()
     } catch (e) {
       console.error(e)
-      alert(e instanceof Error ? e.message : 'Error al generar la comparación de prompts.')
+      manejarErrorGeneracion(e)
     } finally {
       setLoadingComparar(false)
     }
@@ -508,6 +509,7 @@ function FichaAprendizajeContent() {
 
   return (
     <>
+      {AvisoModalEl}
       <Header />
       <main className={styles.main}>
         <div className={styles.container}>

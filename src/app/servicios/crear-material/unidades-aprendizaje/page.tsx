@@ -151,20 +151,9 @@ async function fetchYDescargarPromptDinamicoUnidad(
     body: JSON.stringify({ formData: formDataPayload })
   })
 
-  if (!response.ok) {
-    const errorData = await response.json().catch(() => ({ error: 'Error desconocido' }))
-    throw new Error(
-      (errorData as { error?: string }).error ||
-        `Error al generar el Word del prompt (${response.status})`
-    )
-  }
-
-  const contentType = response.headers.get('Content-Type')
-  if (contentType?.includes('application/json')) {
-    const errorData = await response.json().catch(() => ({ error: 'Error desconocido' }))
-    throw new Error(
-      (errorData as { error?: string }).error || 'Error al generar el documento Word del prompt'
-    )
+  const contentType = response.headers.get('Content-Type') ?? ''
+  if (!response.ok || contentType.includes('application/json')) {
+    throw await errorDesdeResponse(response, 'Error al generar el Word del prompt')
   }
 
   const blob = await response.blob()
@@ -1048,8 +1037,7 @@ function UnidadesAprendizajeContent() {
       console.log('✅ Descarga de Word del prompt dinámico iniciada')
     } catch (error: unknown) {
       console.error('❌ Error al generar el Word del prompt:', error)
-      const msg = error instanceof Error ? error.message : 'Error desconocido'
-      alert(`Error al generar el Word del prompt: ${msg}`)
+      manejarErrorGeneracion(error)
     } finally {
       setLoading(false)
     }
@@ -1075,24 +1063,14 @@ function UnidadesAprendizajeContent() {
         }),
       })
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ error: 'Error desconocido' }))
-        console.error('❌ Error en la respuesta:', errorData)
-        throw new Error(errorData.error || `Error al generar enfoques con IA (${response.status})`)
+      const contentType = response.headers.get('Content-Type') ?? ''
+      if (!response.ok || contentType.includes('application/json')) {
+        throw await errorDesdeResponse(
+          response,
+          'Error al generar el prompt de enfoques'
+        )
       }
 
-      // Verificar el Content-Type de la respuesta
-      const contentType = response.headers.get('Content-Type')
-      console.log('📄 Content-Type recibido:', contentType)
-      
-      // Si la respuesta no es un documento Word, verificar si es un error JSON
-      if (contentType && contentType.includes('application/json')) {
-        const errorData = await response.json().catch(() => ({ error: 'Error desconocido' }))
-        console.error('❌ Error en la respuesta (JSON):', errorData)
-        throw new Error(errorData.error || 'Error al generar el documento Word')
-      }
-
-      // Obtener el blob del documento Word
       const blob = await response.blob()
       
       if (!blob || blob.size === 0) {
@@ -1101,7 +1079,6 @@ function UnidadesAprendizajeContent() {
 
       console.log('📦 Blob recibido - Tipo:', blob.type, 'Tamaño:', blob.size, 'bytes')
 
-      // Obtener el nombre del archivo del header Content-Disposition
       const contentDisposition = response.headers.get('Content-Disposition')
       let fileName = `prompt-enfoques-${formData.unidad || '0'}-${Date.now()}.docx`
       
@@ -1138,9 +1115,9 @@ function UnidadesAprendizajeContent() {
       }, 200)
       
       console.log('✅ Descarga de Word del prompt de enfoques iniciada')
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('❌ Error al generar el prompt de enfoques:', error)
-      alert(`Error al generar el prompt de enfoques: ${error.message || 'Error desconocido'}`)
+      manejarErrorGeneracion(error)
     } finally {
       setLoading(false)
     }
@@ -1166,24 +1143,14 @@ function UnidadesAprendizajeContent() {
         }),
       })
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ error: 'Error desconocido' }))
-        console.error('❌ Error en la respuesta:', errorData)
-        throw new Error(errorData.error || `Error al generar enfoques con IA (${response.status})`)
+      const contentType = response.headers.get('Content-Type') ?? ''
+      if (!response.ok || contentType.includes('application/json')) {
+        throw await errorDesdeResponse(
+          response,
+          'Error al generar enfoques con IA'
+        )
       }
 
-      // Verificar el Content-Type de la respuesta
-      const contentType = response.headers.get('Content-Type')
-      console.log('📄 Content-Type recibido:', contentType)
-      
-      // Si la respuesta no es un documento Word, verificar si es un error JSON
-      if (contentType && contentType.includes('application/json')) {
-        const errorData = await response.json().catch(() => ({ error: 'Error desconocido' }))
-        console.error('❌ Error en la respuesta (JSON):', errorData)
-        throw new Error(errorData.error || 'Error al generar el documento Word')
-      }
-
-      // Obtener el blob del documento Word
       const blob = await response.blob()
       
       if (!blob || blob.size === 0) {
@@ -1192,7 +1159,6 @@ function UnidadesAprendizajeContent() {
 
       console.log('📦 Blob recibido - Tipo:', blob.type, 'Tamaño:', blob.size, 'bytes')
 
-      // Obtener el nombre del archivo del header Content-Disposition
       const contentDisposition = response.headers.get('Content-Disposition')
       let fileName = `enfoques-generados-${formData.unidad || '0'}-${Date.now()}.docx`
       
@@ -1229,9 +1195,9 @@ function UnidadesAprendizajeContent() {
       }, 200)
       
       console.log('✅ Descarga de Word de enfoques generados con IA iniciada')
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('❌ Error al generar enfoques con IA:', error)
-      alert(`Error al generar enfoques con IA: ${error.message || 'Error desconocido'}`)
+      manejarErrorGeneracion(error)
     } finally {
       setLoading(false)
     }
@@ -1260,24 +1226,11 @@ function UnidadesAprendizajeContent() {
         }),
       })
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ error: 'Error desconocido' }))
-        console.error('❌ Error en la respuesta:', errorData)
-        throw new Error(errorData.error || `Error al generar el texto (${response.status})`)
+      const contentType = response.headers.get('Content-Type') ?? ''
+      if (!response.ok || contentType.includes('application/json')) {
+        throw await errorDesdeResponse(response, 'Error al generar el texto por prompt')
       }
 
-      // Verificar el Content-Type de la respuesta
-      const contentType = response.headers.get('Content-Type')
-      console.log('📄 Content-Type recibido:', contentType)
-      
-      // Si la respuesta no es un documento Word, verificar si es un error JSON
-      if (contentType && contentType.includes('application/json')) {
-        const errorData = await response.json().catch(() => ({ error: 'Error desconocido' }))
-        console.error('❌ Error en la respuesta (JSON):', errorData)
-        throw new Error(errorData.error || 'Error al generar el documento Word')
-      }
-
-      // Obtener el blob del documento Word
       const blob = await response.blob()
       
       if (!blob || blob.size === 0) {
@@ -1286,7 +1239,6 @@ function UnidadesAprendizajeContent() {
 
       console.log('📦 Blob recibido - Tipo:', blob.type, 'Tamaño:', blob.size, 'bytes')
 
-      // Obtener el nombre del archivo del header Content-Disposition
       const contentDisposition = response.headers.get('Content-Disposition')
       let fileName = `texto-generado-${formData.unidad || '0'}-${Date.now()}.docx`
       
@@ -1323,9 +1275,9 @@ function UnidadesAprendizajeContent() {
       }, 200)
       
       console.log('✅ Descarga de documento Word (.docx) generado iniciada')
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('❌ Error al generar el texto por prompt:', error)
-      alert(`Error al generar el texto: ${error.message || 'Error desconocido'}`)
+      manejarErrorGeneracion(error)
     } finally {
       setLoading(false)
     }

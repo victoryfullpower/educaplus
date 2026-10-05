@@ -6,6 +6,7 @@ import Docxtemplater from 'docxtemplater'
 import PizZip from 'pizzip'
 import mammoth from 'mammoth'
 import { getUserId } from '@/lib/auth'
+import { responderErrorApiCatch } from '@/lib/openai-errors'
 import { prisma } from '@/lib/prisma'
 import {
   consumirCreditoRegeneracion,
@@ -416,13 +417,6 @@ export async function POST(request: NextRequest) {
     })
   } catch (error) {
     console.error('Error en generate-document-rubrica:', error)
-    const msg = error instanceof Error ? error.message : 'Error desconocido'
-    return NextResponse.json(
-      {
-        error: 'Error al generar el documento de rúbrica',
-        details: process.env.NODE_ENV === 'development' ? msg : undefined
-      },
-      { status: 500 }
-    )
+    return responderErrorApiCatch(error, 'Error al generar el documento de rúbrica')
   }
 }

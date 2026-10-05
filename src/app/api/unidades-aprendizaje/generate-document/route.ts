@@ -38,6 +38,13 @@ import {
   generarCompetenciasBdTexto,
   generarMatrizTexto
 } from '@/lib/matriz-unidad-prompt'
+import {
+  errorOpenAiSinSaldo,
+  esCuerpoOpenAiSinSaldo,
+  esErrorOpenAiSinSaldoDesdeUnknown,
+  nextResponseOpenAiSinSaldo,
+  responderErrorApiCatch
+} from '@/lib/openai-errors'
 
 function agregarTextoRespuestaIa(actual: string | null, nuevo: string): string {
   const t = nuevo.trim()
@@ -2341,6 +2348,10 @@ export async function POST(request: NextRequest) {
                 )
 
                 // Si no es exitosa pero no es el último intento, esperar y reintentar
+                if (esCuerpoOpenAiSinSaldo(bodyErr)) {
+                  throw errorOpenAiSinSaldo()
+                }
+
                 if (attempt < maxRetries) {
                   const delay = Math.min(1000 * Math.pow(2, attempt - 1), 5000)
                   await new Promise(resolve => setTimeout(resolve, delay))
@@ -2849,6 +2860,9 @@ export async function POST(request: NextRequest) {
           }
           }
         } catch (error) {
+          if (esErrorOpenAiSinSaldoDesdeUnknown(error)) {
+            return nextResponseOpenAiSinSaldo()
+          }
           console.error('[unidad] Error al generar tabla didáctica con IA:', error)
         }
       }
@@ -3254,22 +3268,9 @@ export async function POST(request: NextRequest) {
         { status: 500 }
       )
     }
-  } catch (error: any) {
-    let errorMessage = 'Error al generar el documento'
-    let errorDetails = ''
-    
-    if (error instanceof Error) {
-      errorMessage = error.message
-      errorDetails = error.stack || ''
-    }
-    
-    return NextResponse.json(
-      { 
-        error: errorMessage,
-        details: process.env.NODE_ENV === 'development' ? errorDetails : 'Revisa los logs del servidor para más detalles'
-      },
-      { status: 500 }
-    )
+  } catch (error: unknown) {
+    console.error('Error al generar unidad:', error)
+    return responderErrorApiCatch(error, 'Error al generar el documento')
   }
 }
 

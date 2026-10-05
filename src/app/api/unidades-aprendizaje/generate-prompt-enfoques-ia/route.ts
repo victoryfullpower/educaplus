@@ -5,6 +5,11 @@ import { prisma } from '@/lib/prisma'
 import { getUserId } from '@/lib/auth'
 import { Document, Packer, Paragraph, TextRun, AlignmentType } from 'docx'
 import mammoth from 'mammoth'
+import {
+  esCuerpoOpenAiSinSaldo,
+  errorOpenAiSinSaldo,
+  responderErrorApiCatch
+} from '@/lib/openai-errors'
 
 export const dynamic = 'force-dynamic'
 
@@ -153,6 +158,11 @@ export async function POST(request: NextRequest) {
           clearTimeout(timeoutId)
           break
         }
+
+        const bodyErr = await openaiResponse.clone().json().catch(() => ({}))
+        if (esCuerpoOpenAiSinSaldo(bodyErr)) {
+          throw errorOpenAiSinSaldo()
+        }
         
         if (attempt === maxRetries) {
           throw new Error(`OpenAI API error: ${openaiResponse.status} ${openaiResponse.statusText}`)
@@ -261,11 +271,7 @@ export async function POST(request: NextRequest) {
     })
   } catch (error) {
     console.error('Error al generar enfoques con IA:', error)
-    const errorMessage = error instanceof Error ? error.message : 'Error desconocido'
-    return NextResponse.json(
-      { error: 'Error al generar los enfoques con IA', details: process.env.NODE_ENV === 'development' ? errorMessage : undefined },
-      { status: 500 }
-    )
+    return responderErrorApiCatch(error, 'Error al generar los enfoques con IA')
   }
 }
 

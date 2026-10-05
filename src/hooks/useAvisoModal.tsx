@@ -17,6 +17,8 @@ import {
   MSG_TRIAL_FICHA_COTEJO_REQUIERE_PLAN,
   MSG_TRIAL_SOLO_SESION_1,
   MSG_TRIAL_UNA_UNIDAD_PLAN,
+  MSG_OPENAI_SIN_SALDO,
+  esErrorOpenAiSinSaldo,
   RUTA_PLANES_PAGO
 } from '@/lib/error-generacion-documento'
 
@@ -104,6 +106,15 @@ export function useAvisoModal(subtituloPorDefecto = 'EducaPlus') {
           tipo: 'warn',
           botonTexto: 'Ver planes',
           onCloseRedirect: RUTA_PLANES_PAGO
+        })
+        return true
+      }
+      if (esErrorOpenAiSinSaldo(error)) {
+        mostrarAviso({
+          titulo: 'Servicio de IA no disponible',
+          mensaje:
+            error instanceof Error ? error.message : MSG_OPENAI_SIN_SALDO,
+          tipo: 'error'
         })
         return true
       }

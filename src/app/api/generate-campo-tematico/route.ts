@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { responderErrorApiCatch } from '@/lib/openai-errors'
 import { generateCampoTematico } from '@/lib/generate-campo-tematico'
 
 export const dynamic = 'force-dynamic'
@@ -29,23 +30,10 @@ export async function POST(request: NextRequest) {
       campoTematico: resultado.campoTematico,
       respuestaCompleta: resultado.respuestaCompleta
     })
-  } catch (error: any) {
+  } catch (error: unknown) {
     const tiempoError = ((Date.now() - tiempoInicio) / 1000).toFixed(2)
     console.error(`❌ [ERROR] Falló después de ${tiempoError}s:`, error)
-    
-    let errorMessage = 'Error al generar el campo temático'
-    
-    if (error instanceof Error) {
-      errorMessage = error.message
-    }
-    
-    return NextResponse.json(
-      { 
-        error: errorMessage,
-        details: process.env.NODE_ENV === 'development' ? error.stack : undefined
-      },
-      { status: 500 }
-    )
+    return responderErrorApiCatch(error, 'Error al generar el campo temático')
   }
 }
 

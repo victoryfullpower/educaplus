@@ -17,6 +17,7 @@ import {
 import { assertPuedeCrearPlanAnual } from '@/lib/limites-plan-anual'
 import { unidadPlanTieneConfiguracion } from '@/lib/acceso-cliente'
 import { MSG_TRIAL_UNA_UNIDAD_PLAN } from '@/lib/error-generacion-documento'
+import { responderErrorApiCatch } from '@/lib/openai-errors'
 import {
   CODE_PDF_TRIAL_NO_DISPONIBLE,
   MSG_PDF_TRIAL_NO_DISPONIBLE,
@@ -1048,23 +1049,8 @@ export async function POST(request: NextRequest) {
         ...entrega.extraHeaders
       }
     })
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('Error al generar el documento:', error)
-    
-    let errorMessage = 'Error al generar el documento'
-    let errorDetails = ''
-    
-    if (error instanceof Error) {
-      errorMessage = error.message
-      errorDetails = error.stack || ''
-    }
-    
-    return NextResponse.json(
-      { 
-        error: errorMessage,
-        details: process.env.NODE_ENV === 'development' ? errorDetails : 'Revisa los logs del servidor para más detalles'
-      },
-      { status: 500 }
-    )
+    return responderErrorApiCatch(error, 'Error al generar el documento')
   }
 }

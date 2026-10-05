@@ -3,6 +3,8 @@
 import { useState, useEffect } from 'react'
 import Header from '@/components/Header'
 import styles from './rubricas-solo.module.css'
+import { errorDesdeResponse } from '@/lib/error-generacion-documento'
+import { useAvisoModal } from '@/hooks/useAvisoModal'
 
 type PlanAnual = {
   id: number
@@ -41,6 +43,9 @@ type UnidadAprendizaje = {
 }
 
 export default function RubricasSoloPage() {
+  const { manejarErrorGeneracion, AvisoModalEl } = useAvisoModal(
+    'EducaPlus · Rúbrica analítica'
+  )
   const anio = new Date().getFullYear()
   const [planes, setPlanes] = useState<PlanAnual[]>([])
   const [unidades, setUnidades] = useState<UnidadAprendizaje[]>([])
@@ -145,8 +150,7 @@ export default function RubricasSoloPage() {
         body: JSON.stringify({ sesionId: sesionSeleccionada.id })
       })
       if (!response.ok) {
-        const err = await response.json()
-        throw new Error(err.error || 'Error al generar el prompt')
+        throw await errorDesdeResponse(response, 'Error al generar el prompt')
       }
       const blob = await response.blob()
       const url = window.URL.createObjectURL(blob)
@@ -159,7 +163,7 @@ export default function RubricasSoloPage() {
       window.URL.revokeObjectURL(url)
     } catch (e) {
       console.error(e)
-      alert(e instanceof Error ? e.message : 'Error al generar el documento de prompt.')
+      manejarErrorGeneracion(e)
     } finally {
       setLoadingPrompt(false)
     }
@@ -175,8 +179,7 @@ export default function RubricasSoloPage() {
         body: JSON.stringify({ sesionId: sesionSeleccionada.id })
       })
       if (!response.ok) {
-        const err = await response.json()
-        throw new Error(err.error || 'Error al generar la respuesta del prompt')
+        throw await errorDesdeResponse(response, 'Error al generar la respuesta del prompt')
       }
       const blob = await response.blob()
       const url = window.URL.createObjectURL(blob)
@@ -189,7 +192,7 @@ export default function RubricasSoloPage() {
       window.URL.revokeObjectURL(url)
     } catch (e) {
       console.error(e)
-      alert(e instanceof Error ? e.message : 'Error al generar la respuesta del prompt.')
+      manejarErrorGeneracion(e)
     } finally {
       setLoadingRespuestaPrompt(false)
     }
@@ -209,8 +212,7 @@ export default function RubricasSoloPage() {
         })
       })
       if (!response.ok) {
-        const err = await response.json()
-        throw new Error(err.error || 'Error al generar el documento')
+        throw await errorDesdeResponse(response, 'Error al generar el documento')
       }
       const fromSaved = response.headers.get('X-Rubrica-From') === 'saved'
       const blob = await response.blob()
@@ -227,7 +229,7 @@ export default function RubricasSoloPage() {
       }
     } catch (e) {
       console.error(e)
-      alert(e instanceof Error ? e.message : 'Error al generar el documento.')
+      manejarErrorGeneracion(e)
     } finally {
       setLoadingDocument(false)
     }
@@ -254,6 +256,7 @@ export default function RubricasSoloPage() {
 
   return (
     <>
+      {AvisoModalEl}
       <Header />
       <main className={styles.main}>
         <div className={styles.container}>

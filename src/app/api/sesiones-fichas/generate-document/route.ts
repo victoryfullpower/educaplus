@@ -21,6 +21,10 @@ import {
   sesionPermitidaEnTrial
 } from '@/lib/acceso-trial'
 import {
+  nextResponseSiErrorOpenAiSinSaldo,
+  responderErrorApiCatch
+} from '@/lib/openai-errors'
+import {
   CODE_PDF_TRIAL_NO_DISPONIBLE,
   MSG_PDF_TRIAL_NO_DISPONIBLE,
   prepararEntregaDocumento
@@ -833,6 +837,8 @@ export async function POST(request: NextRequest) {
         )
       } catch (err) {
         console.error('Error al llamar GPT en generar documento sesión:', err)
+        const openAi = nextResponseSiErrorOpenAiSinSaldo(err)
+        if (openAi) return openAi
         const mensaje =
           err instanceof Error ? err.message : 'No se pudo generar la sesión con GPT'
         return NextResponse.json(
@@ -1533,14 +1539,7 @@ export async function POST(request: NextRequest) {
     })
   } catch (error) {
     console.error('Error al generar documento de sesión:', error)
-    const errorMessage = error instanceof Error ? error.message : 'Error desconocido'
-    return NextResponse.json(
-      { 
-        error: 'Error al generar el documento de sesión', 
-        details: process.env.NODE_ENV === 'development' ? errorMessage : undefined 
-      },
-      { status: 500 }
-    )
+    return responderErrorApiCatch(error, 'Error al generar el documento de sesión')
   }
 }
 

@@ -10,7 +10,7 @@ const nextConfig: NextConfig = {
   // output: 'export', // Solo para builds estáticos
   serverExternalPackages: ['pdfjs-dist', 'pdf-to-img', 'html-to-docx'],
   experimental: {
-    proxyClientMaxBodySize: '100mb'
+    proxyClientMaxBodySize: '500mb'
   },
   trailingSlash: true,
   images: {

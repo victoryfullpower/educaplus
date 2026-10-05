@@ -5,6 +5,7 @@ import OpenAI from 'openai'
 import mammoth from 'mammoth'
 import Docxtemplater from 'docxtemplater'
 import PizZip from 'pizzip'
+import { responderErrorApiCatch } from '@/lib/openai-errors'
 import {
   Document,
   Packer,
@@ -223,13 +224,6 @@ export async function POST(request: NextRequest) {
     })
   } catch (error) {
     console.error('Error en generate-sesion-refuerzo:', error)
-    const msg = error instanceof Error ? error.message : 'Error desconocido'
-    return NextResponse.json(
-      {
-        error: 'Error al generar la sesión de refuerzo',
-        details: process.env.NODE_ENV === 'development' ? msg : undefined
-      },
-      { status: 500 }
-    )
+    return responderErrorApiCatch(error, 'Error al generar la sesión de refuerzo')
   }
 }

@@ -13,6 +13,7 @@ import {
   validarRegeneracionIA
 } from '@/lib/acceso-usuario'
 import { MSG_TRIAL_FICHA_COTEJO_REQUIERE_PLAN } from '@/lib/acceso-trial'
+import { responderErrorApiCatch } from '@/lib/openai-errors'
 import { construirWordDesdeRespuestaGpt } from '@/lib/respuesta-prompt-word'
 import { parsearSaberesSesion } from '@/lib/ficha-vista-html'
 import {
@@ -571,10 +572,6 @@ export async function POST(request: NextRequest) {
     })
   } catch (error) {
     console.error('Error en generate-document-ficha:', error)
-    const msg = error instanceof Error ? error.message : 'Error desconocido'
-    return NextResponse.json(
-      { error: 'Error al generar el documento de ficha de aprendizaje', details: process.env.NODE_ENV === 'development' ? msg : undefined },
-      { status: 500 }
-    )
+    return responderErrorApiCatch(error, 'Error al generar el documento de ficha de aprendizaje')
   }
 }

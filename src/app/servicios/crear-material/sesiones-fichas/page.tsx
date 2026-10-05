@@ -7,6 +7,8 @@ import Header from '@/components/Header'
 import styles from './sesiones-fichas.module.css'
 import { descargarSesionDesdeRespuestaJson } from '@/lib/home-descarga-documento'
 import {
+  errorDesdeResponse,
+  esErrorOpenAiSinSaldo,
   esErrorTrialAgotado,
   esErrorTrialUnaSesion,
   RUTA_PLANES_PAGO
@@ -758,7 +760,11 @@ function SesionesFichasContent() {
             p.numeroSesion === sesion.numeroSesion ? { ...p, estado: 'error', mensaje } : p
           )
         )
-        if (esErrorTrialAgotado(error) || esErrorTrialUnaSesion(error)) {
+        if (
+          esErrorTrialAgotado(error) ||
+          esErrorTrialUnaSesion(error) ||
+          esErrorOpenAiSinSaldo(error)
+        ) {
           manejarErrorGeneracion(error)
           break
         }
@@ -852,8 +858,7 @@ function SesionesFichasContent() {
         })
       })
       if (!response.ok) {
-        const err = await response.json()
-        throw new Error(err.error || 'Error al generar el prompt')
+        throw await errorDesdeResponse(response, 'Error al generar el prompt')
       }
       const blob = await response.blob()
       const url = window.URL.createObjectURL(blob)
@@ -866,7 +871,7 @@ function SesionesFichasContent() {
       window.URL.revokeObjectURL(url)
     } catch (error) {
       console.error('Error al generar prompt:', error)
-      alert(error instanceof Error ? error.message : 'Error al generar el documento de prompt.')
+      manejarErrorGeneracion(error)
     } finally {
       setLoadingPrompt(false)
     }
@@ -907,8 +912,7 @@ function SesionesFichasContent() {
         })
       })
       if (!response.ok) {
-        const err = await response.json()
-        throw new Error(err.error || 'Error al generar la respuesta del prompt')
+        throw await errorDesdeResponse(response, 'Error al generar la respuesta del prompt')
       }
       const contentType = response.headers.get('Content-Type') || ''
       if (contentType.includes('application/json')) {
@@ -952,7 +956,7 @@ function SesionesFichasContent() {
       }
     } catch (error) {
       console.error('Error al generar respuesta prompt:', error)
-      alert(error instanceof Error ? error.message : 'Error al generar la respuesta del prompt.')
+      manejarErrorGeneracion(error)
     } finally {
       setLoadingRespuestaPrompt(false)
     }

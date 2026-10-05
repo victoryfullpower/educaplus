@@ -1,4 +1,5 @@
 import OpenAI from 'openai'
+import { propagarErrorOpenAiSdk } from '@/lib/openai-errors'
 import { getPromptByDescripcion, buildPromptFromText } from './prompt-helpers'
 import { parseTituloYSituacionDesdeRespuestaIA } from './parse-situacion-significativa-ia'
 
@@ -165,7 +166,12 @@ export async function generateSituacionSignificativa(
       requestConfig.temperature = 0.7
     }
     
-    const completion = await openaiClient.chat.completions.create(requestConfig)
+    let completion
+    try {
+      completion = await openaiClient.chat.completions.create(requestConfig)
+    } catch (sdkError) {
+      propagarErrorOpenAiSdk(sdkError)
+    }
     respuestaIA = completion.choices[0]?.message?.content || ''
     
     console.log('📥 [DEBUG generateSituacionSignificativa] Respuesta de OpenAI:', {

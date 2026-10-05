@@ -1,3 +1,12 @@
+import {
+  esErrorOpenAiSinSaldoDesdeUnknown,
+  esMensajeOpenAiSinSaldo,
+  MSG_OPENAI_SIN_SALDO,
+  OPENAI_SIN_SALDO_CODE
+} from '@/lib/openai-errors'
+
+export { MSG_OPENAI_SIN_SALDO, OPENAI_SIN_SALDO_CODE }
+
 export const MSG_TRIAL_AGOTADO =
   'Tu prueba gratuita ya no tiene cupo para este tipo de documento. Activa un plan para continuar.'
 
@@ -50,16 +59,36 @@ export function esTrialAgotadoPayload(data: {
 export class ErrorGeneracionDocumento extends Error {
   readonly code?: string
   readonly trialAgotado: boolean
+  readonly openAiSinSaldo: boolean
 
   constructor(
     message: string,
-    opts?: { code?: string; trialAgotado?: boolean }
+    opts?: { code?: string; trialAgotado?: boolean; openAiSinSaldo?: boolean }
   ) {
     super(message)
     this.name = 'ErrorGeneracionDocumento'
     this.code = opts?.code
     this.trialAgotado = opts?.trialAgotado ?? false
+    this.openAiSinSaldo = opts?.openAiSinSaldo ?? false
   }
+}
+
+export function errorDesdePayload(
+  data: { error?: string; code?: string },
+  status = 500,
+  mensajePorDefecto = 'Error al generar el documento'
+): ErrorGeneracionDocumento {
+  const trialAgotado = esTrialAgotadoPayload(data)
+  const openAiSinSaldo =
+    data.code === OPENAI_SIN_SALDO_CODE || esMensajeOpenAiSinSaldo(data.error ?? '')
+  const mensaje = openAiSinSaldo
+    ? MSG_OPENAI_SIN_SALDO
+    : data.error || `${mensajePorDefecto} (${status})`
+  return new ErrorGeneracionDocumento(mensaje, {
+    code: openAiSinSaldo ? OPENAI_SIN_SALDO_CODE : data.code,
+    trialAgotado,
+    openAiSinSaldo
+  })
 }
 
 export async function errorDesdeResponse(
@@ -70,11 +99,14 @@ export async function errorDesdeResponse(
     error?: string
     code?: string
   }
-  const trialAgotado = esTrialAgotadoPayload(data)
-  return new ErrorGeneracionDocumento(
-    data.error || `${mensajePorDefecto} (${response.status})`,
-    { code: data.code, trialAgotado }
-  )
+  return errorDesdePayload(data, response.status, mensajePorDefecto)
+}
+
+export function esErrorOpenAiSinSaldo(error: unknown): boolean {
+  if (error instanceof ErrorGeneracionDocumento) {
+    return error.openAiSinSaldo || error.code === OPENAI_SIN_SALDO_CODE
+  }
+  return esErrorOpenAiSinSaldoDesdeUnknown(error)
 }
 
 export function esErrorTrialUnaUnidadPlan(error: unknown): boolean {
@@ -123,6 +155,7 @@ export function esErrorRegenCredito(error: unknown): boolean {
 }
 
 export function esErrorTrialAgotado(error: unknown): boolean {
+  if (esErrorOpenAiSinSaldo(error)) return false
   if (esErrorTrialUnaUnidadPlan(error)) return false
   if (esErrorTrialUnaSesion(error)) return false
   if (esErrorTrialFichaCotejo(error)) return false

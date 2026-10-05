@@ -1957,14 +1957,7 @@ function ProgramacionAnualContent() {
     } catch (error) {
       console.error('❌ [FRONTEND] Error al descargar:', error)
       setProgreso('❌ Error al generar el documento')
-      let errorMessage = 'Error al generar el documento'
-      
-      if (error instanceof Error) {
-        errorMessage = error.message
-      }
-      
-      // Mostrar alert con el error detallado
-      alert(`❌ ERROR AL GENERAR DOCUMENTO\n\n${errorMessage}\n\nPor favor verifica tu configuración e intenta nuevamente.`)
+      manejarErrorGeneracion(error)
     } finally {
       setDownloadingSituacion(false)
     }

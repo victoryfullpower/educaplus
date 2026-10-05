@@ -2,6 +2,11 @@ import { NextRequest, NextResponse } from 'next/server'
 import { Document, Packer, Paragraph, TextRun } from 'docx'
 import { getUserId } from '@/lib/auth'
 import {
+  esCuerpoOpenAiSinSaldo,
+  nextResponseOpenAiSinSaldo,
+  responderErrorApiCatch
+} from '@/lib/openai-errors'
+import {
   construirWordDesdeRespuestaGpt,
   normalizarTextoRespuestaGpt
 } from '@/lib/respuesta-prompt-word'
@@ -98,6 +103,9 @@ export async function POST(request: NextRequest) {
 
     if (!openaiResponse.ok) {
       const errorData = await openaiResponse.json().catch(() => ({} as { error?: { message?: string; code?: string } }))
+      if (esCuerpoOpenAiSinSaldo(errorData)) {
+        return nextResponseOpenAiSinSaldo()
+      }
       const detalle =
         errorData?.error?.message ||
         `${openaiResponse.status} ${openaiResponse.statusText}`
@@ -137,13 +145,6 @@ export async function POST(request: NextRequest) {
     })
   } catch (error) {
     console.error('[probar-prompt]', error)
-    const msg = error instanceof Error ? error.message : 'Error desconocido'
-    return NextResponse.json(
-      {
-        error: 'Error al enviar el prompt',
-        details: process.env.NODE_ENV === 'development' ? msg : undefined
-      },
-      { status: 500 }
-    )
+    return responderErrorApiCatch(error, 'Error al enviar el prompt')
   }
 }

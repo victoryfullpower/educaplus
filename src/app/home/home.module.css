@@ -330,6 +330,26 @@
   margin-top: 8px;
 }
 
+.tabPanelFooter {
+  display: flex;
+  justify-content: center;
+  margin-top: 28px;
+  padding-top: 24px;
+  border-top: 1px solid #e2e8f0;
+}
+
+.newPlanButtonCardDisabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  pointer-events: none;
+  box-shadow: none;
+}
+
+.newPlanButtonCardDisabled:hover {
+  transform: none;
+  box-shadow: none;
+}
+
 .stepper {
   width: 100%;
   margin-top: 20px;

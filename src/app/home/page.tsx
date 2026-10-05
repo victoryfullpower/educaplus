@@ -502,6 +502,23 @@ function HomeContent() {
                       </div>
                     ))}
                   </div>
+                  <div className={styles.tabPanelFooter}>
+                    {puedeCrearPlanAnual ? (
+                      <Link
+                        href="/servicios/crear-material/programacion-anual"
+                        className={styles.newPlanButtonCard}
+                      >
+                        ➕ Nuevo plan anual
+                      </Link>
+                    ) : (
+                      <span
+                        className={`${styles.newPlanButtonCard} ${styles.newPlanButtonCardDisabled}`}
+                        title={cuotaPlanAnual?.mensaje ?? 'Límite alcanzado'}
+                      >
+                        ➕ Nuevo plan anual
+                      </span>
+                    )}
+                  </div>
                 </div>
               )}
             </div>
