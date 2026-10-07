@@ -13,7 +13,7 @@ import {
   MAX_COPIAS_MASIVO_SELLO,
   MSG_CODIGO_SELLO_DUPLICADO
 } from '@/lib/sello-documento-constants'
-import { fusionarZipConAdjuntos } from '@/lib/sello-zip-cliente'
+import { fusionarZipConAdjuntos, fusionarZipMasivoConAdjuntos } from '@/lib/sello-zip-cliente'
 import { verificarSelloEnArchivo } from '@/lib/documento-sello-cliente'
 import styles from './sello-documentos.module.css'
 
@@ -130,19 +130,79 @@ async function prepararCopiaMasivo(
     : new Error('No se pudo preparar la copia sellada')
 }
 
-function descargarCopiaMasivoDesdeServidor(
+function esErrorArchivoPerdido(e: unknown): boolean {
+  const msg = e instanceof Error ? e.message : String(e)
+  return (
+    msg.includes('could not be found') ||
+    msg.includes('NotFoundError') ||
+    msg.includes('ERR_FILE_NOT_FOUND') ||
+    msg.includes('A requested file or directory')
+  )
+}
+
+function mensajeArchivoPerdido(): string {
+  return 'Chrome perdió el acceso a la carpeta (recarga en caliente o el selector se vació). Pulsa «Limpiar lista», vuelve a elegir la carpeta y sella enseguida, sin esperar a que Cursor recargue.'
+}
+
+function archivosDesdeInput(input: HTMLInputElement | null): File[] {
+  if (!input?.files?.length) return []
+  return Array.from(input.files)
+}
+
+async function subirSesionMasivo(archivos: File[]): Promise<{
+  sessionId: string
+  omitidos: string[]
+}> {
+  const form = new FormData()
+  for (const archivo of archivos) form.append('archivos', archivo)
+
+  const sesRes = await fetch('/api/sello-documentos/masivo/sesion/', {
+    method: 'POST',
+    body: form,
+    cache: 'no-store'
+  })
+
+  if (!sesRes.ok) {
+    const err = await sesRes.json().catch(() => ({}))
+    const det = Array.isArray(err.detalles)
+      ? `\n${(err.detalles as string[]).join('\n')}`
+      : ''
+    throw new Error((err.error as string) || 'No se pudo preparar la carpeta' + det)
+  }
+
+  const sesData = (await sesRes.json()) as {
+    sessionId?: string
+    detalles?: string[]
+  }
+  if (!sesData.sessionId) throw new Error('No se pudo iniciar la sesión de sellado')
+  return { sessionId: sesData.sessionId, omitidos: sesData.detalles ?? [] }
+}
+
+async function descargarCopiaMasivoDesdeServidor(
   sessionId: string,
   codigo: string,
-  nombreArchivo: string
+  nombreArchivo: string,
+  adjuntos: File[]
 ) {
   const url = `/api/sello-documentos/masivo/copia/?sessionId=${encodeURIComponent(sessionId)}&codigo=${encodeURIComponent(codigo)}`
-  const a = document.createElement('a')
-  a.href = url
-  a.download = nombreArchivo
-  a.rel = 'noopener'
-  document.body.appendChild(a)
-  a.click()
-  a.remove()
+  const res = await fetch(url, { cache: 'no-store' })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error((err.error as string) || 'No se pudo descargar el ZIP')
+  }
+
+  let blob = await res.blob()
+  let videosOmitidos = false
+  if (adjuntos.length > 0) {
+    try {
+      blob = await fusionarZipMasivoConAdjuntos(blob, adjuntos)
+    } catch (e) {
+      if (!esErrorArchivoPerdido(e)) throw e
+      videosOmitidos = true
+    }
+  }
+  descargarBlob(blob, nombreArchivo)
+  return { videosOmitidos }
 }
 
 function calcularProgresoMasivoPct(progreso: ProgresoMasivo): number {
@@ -254,6 +314,21 @@ export default function SelloDocumentosPage() {
   )
 
   const cerrarModalAviso = useCallback(() => setModalAviso(null), [])
+
+  useEffect(() => {
+    if (window.location.hostname !== 'localhost') return
+    const siguiente = new URL(window.location.href)
+    siguiente.hostname = '127.0.0.1'
+    window.location.replace(siguiente.toString())
+  }, [])
+
+  useEffect(() => {
+    const hot = (import.meta as { hot?: { dispose?: (cb: () => void) => void } }).hot
+    hot?.dispose?.(() => {
+      setArchivosMasivo([])
+      setAdjuntosMasivo([])
+    })
+  }, [])
 
   useEffect(() => {
     if (!modalAviso) return
@@ -470,7 +545,6 @@ export default function SelloDocumentosPage() {
         return [...map.values()]
       })
     }
-    limpiarInputsArchivosMasivo()
   }
 
   const limpiarArchivosMasivo = () => {
@@ -701,6 +775,30 @@ export default function SelloDocumentosPage() {
       return
     }
 
+    const desdeSelector = [
+      ...archivosDesdeInput(inputArchivosMasivoRef.current),
+      ...archivosDesdeInput(inputCarpetaMasivoRef.current)
+    ]
+    const docsVivos = desdeSelector.filter((f) => esDocumentoSellable(f.name))
+    const videosVivos = desdeSelector.filter((f) => esAdjuntoSello(f.name))
+    const persistidoInicial = leerMasivoPersistido()
+    const countDocs = docsVivos.length > 0 ? docsVivos.length : archivosMasivo.length
+    const puedeReanudarInicial = Boolean(
+      persistidoInicial &&
+        persistidoInicial.codigoBase === codigoBase &&
+        persistidoInicial.cantidadCopias === cantidadCopias &&
+        persistidoInicial.archivosCount === countDocs
+    )
+
+    const documentosASubir = docsVivos.length > 0 ? docsVivos : archivosMasivo
+    const adjuntosAUsar = videosVivos.length > 0 ? videosVivos : []
+
+    if (!puedeReanudarInicial && docsVivos.length === 0 && archivosMasivo.length > 0) {
+      setMensaje(mensajeArchivoPerdido())
+      setMensajeTipo('error')
+      return
+    }
+
     let codigos: string[]
     try {
       codigos = generarSerieCodigos(codigoBase, cantidadCopias)
@@ -730,7 +828,7 @@ export default function SelloDocumentosPage() {
         persistido &&
           persistido.codigoBase === codigoBase &&
           persistido.cantidadCopias === cantidadCopias &&
-          persistido.archivosCount === archivosMasivo.length
+          persistido.archivosCount === documentosASubir.length
       )
 
       if (!puedeReanudar && !(await validarSerieMasivo(codigoBase, cantidadCopias))) return
@@ -751,32 +849,17 @@ export default function SelloDocumentosPage() {
       } else {
         limpiarMasivoPersistido()
 
-        const formSesion = new FormData()
-        for (const f of archivosMasivo) formSesion.append('archivos', f)
-        for (const f of adjuntosMasivo) formSesion.append('adjuntos', f)
-
-        const sesRes = await fetch('/api/sello-documentos/masivo/sesion/', {
-          method: 'POST',
-          body: formSesion,
-          cache: 'no-store'
-        })
-        if (!sesRes.ok) {
-          const err = await sesRes.json().catch(() => ({}))
-          const det = Array.isArray(err.detalles)
-            ? `\n${(err.detalles as string[]).join('\n')}`
-            : ''
-          throw new Error((err.error as string) || 'No se pudo preparar la carpeta' + det)
+        const subida = await subirSesionMasivo(documentosASubir)
+        sessionId = subida.sessionId
+        if (subida.omitidos.length) {
+          erroresAcumulados.push(...subida.omitidos)
         }
-
-        const sesData = (await sesRes.json()) as { sessionId?: string }
-        sessionId = sesData.sessionId ?? null
-        if (!sessionId) throw new Error('No se pudo iniciar la sesión de sellado')
 
         guardarMasivoPersistido({
           sessionId,
           codigoBase,
           cantidadCopias,
-          archivosCount: archivosMasivo.length,
+          archivosCount: documentosASubir.length,
           codigosCompletados: []
         })
       }
@@ -827,11 +910,17 @@ export default function SelloDocumentosPage() {
         })
 
         const codigoSlug = codigo.replace(/[^\w-]+/g, '_')
-        descargarCopiaMasivoDesdeServidor(
+        const descarga = await descargarCopiaMasivoDesdeServidor(
           sessionId,
           codigo,
-          `sellado_${codigoSlug}.zip`
+          `sellado_${codigoSlug}.zip`,
+          adjuntosAUsar
         )
+        if (descarga.videosOmitidos) {
+          erroresAcumulados.push(
+            'Los videos no se pudieron añadir al ZIP (Chrome perdió la carpeta). El ZIP de documentos sí se descargó.'
+          )
+        }
         copiasDescargadas++
         await esperar(2500)
 
@@ -841,14 +930,14 @@ export default function SelloDocumentosPage() {
             sessionId,
             codigoBase,
             cantidadCopias,
-            archivosCount: archivosMasivo.length,
+            archivosCount: documentosASubir.length,
             codigosCompletados: [
               ...new Set([...(base?.codigosCompletados ?? []), codigo])
             ]
           })
         }
 
-        selladosTotal += copiaData?.sellados ?? archivosMasivo.length
+        selladosTotal += copiaData?.sellados ?? documentosASubir.length
 
         if (copiaData?.errores?.length) {
           erroresAcumulados.push(...copiaData.errores)
@@ -864,8 +953,8 @@ export default function SelloDocumentosPage() {
       }
 
       let texto = `Listo: ${codigos.length} copia(s) descargada(s) (${codigos[0]} → ${codigos[codigos.length - 1]}). ${selladosTotal} documento(s) sellado(s) en total.`
-      if (adjuntosMasivo.length > 0) {
-        texto += ` Cada ZIP incluye ${adjuntosMasivo.length} video(s) empaquetado(s) en el servidor.`
+      if (adjuntosAUsar.length > 0) {
+        texto += ` Cada ZIP incluye ${adjuntosAUsar.length} video(s) desde tu equipo (no se subieron al servidor).`
       }
       texto += ' Todos los códigos quedaron registrados en el historial.'
 
@@ -881,7 +970,9 @@ export default function SelloDocumentosPage() {
       limpiarMasivoPersistido()
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Error en sellado masivo'
-      if (msg === 'Failed to fetch' || msg.includes('fetch')) {
+      if (esErrorArchivoPerdido(e)) {
+        setMensaje(mensajeArchivoPerdido())
+      } else if (msg === 'Failed to fetch' || msg.includes('fetch')) {
         setMensaje(
           copiasDescargadas > 0
             ? `Error de conexión al recibir la copia ${copiasDescargadas + 1}. Ya se descargaron ${copiasDescargadas} copia(s). Vuelve a pulsar «Sellar masivo» con los mismos datos (misma carpeta y código inicial): continuará desde donde quedó.`
@@ -1208,8 +1299,8 @@ export default function SelloDocumentosPage() {
                   Sube la carpeta una sola vez e indica cuántas copias correlativas necesitas. El
                   servidor sellará con códigos incrementales (ej. <strong>E26-65COM-U4</strong>,{' '}
                   <strong>E26-66COM-U4</strong>…). Cada copia se descarga en un ZIP aparte en cuanto
-                  esté lista. Máximo {MAX_COPIAS_MASIVO_SELLO} copias. Los videos se suben una sola
-                  vez y el servidor los incluye en cada copia.
+                  esté lista. Máximo {MAX_COPIAS_MASIVO_SELLO} copias. Los videos se agregan al ZIP
+                  desde tu equipo, sin subirlos al servidor.
                 </p>
 
                 <div className={styles.formGrid}>

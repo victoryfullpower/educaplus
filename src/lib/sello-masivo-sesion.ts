@@ -54,6 +54,18 @@ export function crearSesionMasivo(
   return id
 }
 
+export function agregarASesionMasivo(
+  id: string,
+  archivos: ArchivoSesionMasivo[] = [],
+  adjuntos: ArchivoSesionMasivo[] = []
+): SesionMasivo | null {
+  const sesion = obtenerSesionMasivo(id)
+  if (!sesion) return null
+  sesion.archivos.push(...archivos)
+  sesion.adjuntos.push(...adjuntos)
+  return sesion
+}
+
 export function obtenerSesionMasivo(id: string): SesionMasivo | null {
   limpiarExpiradas()
   const sesion = sesiones.get(id)

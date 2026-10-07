@@ -9,6 +9,7 @@ const nextConfig: NextConfig = {
   // No usar 'output: export' en desarrollo para permitir rutas API dinámicas
   // output: 'export', // Solo para builds estáticos
   serverExternalPackages: ['pdfjs-dist', 'pdf-to-img', 'html-to-docx'],
+  allowedDevOrigins: ['127.0.0.1', 'localhost'],
   experimental: {
     proxyClientMaxBodySize: '500mb'
   },

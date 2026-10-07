@@ -7,8 +7,10 @@ import {
   MAX_FILE_MB_SELLO
 } from '@/lib/sello-documento-constants'
 import {
+  agregarASesionMasivo,
   crearSesionMasivo,
-  eliminarSesionMasivo
+  eliminarSesionMasivo,
+  obtenerSesionMasivo
 } from '@/lib/sello-masivo-sesion'
 
 export const dynamic = 'force-dynamic'
@@ -20,12 +22,13 @@ const MAX_ADJUNTO_BYTES = 150 * 1024 * 1024
 export async function POST(request: NextRequest) {
   try {
     const form = await request.formData()
+    const sessionIdExistente = String(form.get('sessionId') ?? '').trim()
     const archivos = form.getAll('archivos').filter((f): f is File => f instanceof File)
     const adjuntos = form.getAll('adjuntos').filter((f): f is File => f instanceof File)
 
-    if (archivos.length === 0) {
+    if (archivos.length === 0 && adjuntos.length === 0) {
       return NextResponse.json(
-        { error: 'Sube al menos un archivo .docx o .pdf' },
+        { error: 'Sube al menos un archivo .docx, .pdf o video' },
         { status: 400 }
       )
     }
@@ -72,7 +75,7 @@ export async function POST(request: NextRequest) {
       })
     }
 
-    if (cargados.length === 0) {
+    if (cargados.length === 0 && videos.length === 0) {
       return NextResponse.json(
         {
           error: 'No se pudo cargar ningún documento',
@@ -82,13 +85,43 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    const sessionId = crearSesionMasivo(cargados, videos)
+    let sessionId = sessionIdExistente
+    let sesion = sessionId ? obtenerSesionMasivo(sessionId) : null
+
+    if (sessionId && !sesion) {
+      return NextResponse.json(
+        { error: 'La sesión expiró. Vuelve a subir la carpeta.' },
+        { status: 410 }
+      )
+    }
+
+    if (!sesion) {
+      sessionId = crearSesionMasivo(cargados, videos)
+      sesion = obtenerSesionMasivo(sessionId)
+    } else {
+      sesion = agregarASesionMasivo(sessionId, cargados, videos)
+    }
+
+    if (!sesion || !sessionId) {
+      return NextResponse.json(
+        { error: 'No se pudo guardar el lote en la sesión' },
+        { status: 500 }
+      )
+    }
+
+    if (sesion.archivos.length > MAX_FILES) {
+      return NextResponse.json(
+        { error: `Máximo ${MAX_FILES} archivos por carpeta` },
+        { status: 400 }
+      )
+    }
 
     return NextResponse.json({
       sessionId,
-      archivosCount: cargados.length,
-      adjuntosCount: videos.length,
-      omitidos: errores.length
+      archivosCount: sesion.archivos.length,
+      adjuntosCount: sesion.adjuntos.length,
+      omitidos: errores.length,
+      detalles: errores.length ? errores : undefined
     })
   } catch (error) {
     console.error('sello-documentos/masivo/sesion POST:', error)
